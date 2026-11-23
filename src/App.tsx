@@ -18,6 +18,8 @@ import {AreaSearchBar} from './components/AreaSearchBar';
 import {ArrivalsBoard} from './components/ArrivalsBoard';
 import {ManageZonesPanel} from './components/ManageZonesPanel';
 import {NewcomerGuide} from './components/NewcomerGuide';
+import {OfflineIndicator} from './components/OfflineIndicator';
+import {PWAInstallButton} from './components/PWAInstallButton';
 import {TransitMapView} from './components/TransitMapView';
 import {TRANSLATIONS} from './i18n/translations';
 import {
@@ -637,6 +639,8 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton />
+
             {currentUser ? (
               <button
                 type="button"
@@ -1112,6 +1116,7 @@ export default function App() {
           </div>
         </div>
       </footer>
+      <OfflineIndicator />
     </div>
   );
 }
