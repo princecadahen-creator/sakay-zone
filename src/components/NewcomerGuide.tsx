@@ -1,17 +1,31 @@
 import React from 'react';
-import {Bus, BusFront, CarTaxiFront, Compass, MapPin, ShieldCheck} from 'lucide-react';
+import {
+  Bus,
+  BusFront,
+  CarTaxiFront,
+  CloudRain,
+  Compass,
+  Footprints,
+  MapPin,
+  ShieldCheck,
+  Sun,
+} from 'lucide-react';
 import type {CopyDictionary} from '../i18n/translations';
-import type {LoadingZone, TrackedVehicle} from '../types/transit';
+import type {LoadingZone, TrackedVehicle, ZoneWeatherInfo} from '../types/transit';
 
 interface NewcomerGuideProps {
   selectedZone: LoadingZone | null;
   vehicles: TrackedVehicle[];
+  weather: ZoneWeatherInfo | null;
+  walkingSummary: {distanceMeters: number; durationSeconds: number} | null;
   copy: CopyDictionary;
 }
 
 export const NewcomerGuide: React.FC<NewcomerGuideProps> = ({
   selectedZone,
   vehicles,
+  weather,
+  walkingSummary,
   copy,
 }) => {
   const nearestEta =
@@ -25,7 +39,7 @@ export const NewcomerGuide: React.FC<NewcomerGuideProps> = ({
       className="rounded-xl border border-slate-200 bg-white overflow-hidden"
     >
       <div className="border-b border-slate-200 px-6 py-5">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-bold tracking-tight text-slate-900">
               {copy.newcomerSectionTitle}
@@ -46,7 +60,7 @@ export const NewcomerGuide: React.FC<NewcomerGuideProps> = ({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
-        {/* Selected Zone Details */}
+        {/* Selected Zone Details + Live Weather & Walking Distance */}
         <div className="lg:col-span-5 p-6 space-y-4">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
             <Compass className="h-4 w-4 text-slate-700" aria-hidden="true" />
@@ -59,6 +73,47 @@ export const NewcomerGuide: React.FC<NewcomerGuideProps> = ({
                 <div className="text-base font-bold text-slate-900">{selectedZone.name}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{selectedZone.address}</div>
               </div>
+
+              {(weather || walkingSummary) && (
+                <div className="space-y-2">
+                  {weather && (
+                    <div
+                      className={`flex items-start gap-2.5 rounded-lg px-3.5 py-2.5 text-xs ${
+                        weather.isRainy
+                          ? 'bg-amber-50 text-amber-900 border border-amber-200'
+                          : 'bg-slate-50 text-slate-700 border border-slate-200/80'
+                      }`}
+                    >
+                      {weather.isRainy ? (
+                        <CloudRain className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+                      ) : (
+                        <Sun className="mt-0.5 h-4 w-4 shrink-0 text-slate-600" aria-hidden="true" />
+                      )}
+                      <div>
+                        <span className="font-mono font-bold tabular-nums">
+                          {weather.temperatureC}°C
+                        </span>{' '}
+                        · {weather.isRainy ? copy.weatherRainAlert : copy.weatherClearLabel}
+                      </div>
+                    </div>
+                  )}
+
+                  {walkingSummary && (
+                    <div className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-700">
+                      <span className="inline-flex items-center gap-2 font-medium">
+                        <Footprints className="h-4 w-4 text-slate-700" aria-hidden="true" />
+                        <span>{copy.walkingToStopLabel}</span>
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 tabular-nums">
+                        {walkingSummary.distanceMeters >= 1000
+                          ? `${(walkingSummary.distanceMeters / 1000).toFixed(1)} ${copy.kmShort}`
+                          : `${walkingSummary.distanceMeters} ${copy.mShort}`}{' '}
+                        · {Math.max(1, Math.round(walkingSummary.durationSeconds / 60))} {copy.minShort}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <dl className="divide-y divide-slate-100 border-y border-slate-100 text-xs">
                 <div className="flex items-center justify-between py-2.5">

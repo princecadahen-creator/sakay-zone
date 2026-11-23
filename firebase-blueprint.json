@@ -1,0 +1,376 @@
+{
+  "entities": {
+    "CommunityZone": {
+      "title": "CommunityZone",
+      "description": "A community-pinned loading and unloading zone visible to all commuters.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "address": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "allowedVehicles": {
+          "type": "array"
+        },
+        "ruleType": {
+          "type": "string",
+          "enum": ["loading_unloading", "loading_only", "unloading_only"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "congested", "closed"]
+        },
+        "landmarkTip": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 320
+        },
+        "fareRange": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "address",
+        "lat",
+        "lng",
+        "allowedVehicles",
+        "ruleType",
+        "status",
+        "landmarkTip",
+        "fareRange",
+        "authorUid",
+        "authorName",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ZoneStatusReport": {
+      "title": "ZoneStatusReport",
+      "description": "Live commuter-reported status and queue condition for a loading/unloading zone.",
+      "type": "object",
+      "properties": {
+        "zoneId": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "zoneName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "congested", "closed"]
+        },
+        "queueNote": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 180
+        },
+        "reporterUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reporterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "zoneId",
+        "zoneName",
+        "status",
+        "queueNote",
+        "reporterUid",
+        "reporterName",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VehicleSighting": {
+      "title": "VehicleSighting",
+      "description": "Real commuter sighting of a jeepney, bus, or taxi approaching a loading zone.",
+      "type": "object",
+      "properties": {
+        "zoneId": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "zoneName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "type": {
+          "type": "string",
+          "enum": ["jeep", "bus", "taxi"]
+        },
+        "routeLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "occupancy": {
+          "type": "string",
+          "enum": ["seats", "standing", "full"]
+        },
+        "etaMinutes": {
+          "type": "number"
+        },
+        "zoneLat": {
+          "type": "number"
+        },
+        "zoneLng": {
+          "type": "number"
+        },
+        "reporterUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reporterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "expiresAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "zoneId",
+        "zoneName",
+        "type",
+        "routeLabel",
+        "occupancy",
+        "etaMinutes",
+        "zoneLat",
+        "zoneLng",
+        "reporterUid",
+        "reporterName",
+        "isPublic",
+        "expiresAtMs",
+        "createdAt"
+      ]
+    },
+    "LiveGpsTrip": {
+      "title": "LiveGpsTrip",
+      "description": "Live GPS location broadcast by an active driver or passenger on board a public vehicle.",
+      "type": "object",
+      "properties": {
+        "driverUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "type": {
+          "type": "string",
+          "enum": ["jeep", "bus", "taxi"]
+        },
+        "routeLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "occupancy": {
+          "type": "string",
+          "enum": ["seats", "standing", "full"]
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "speedMps": {
+          "type": "number"
+        },
+        "heading": {
+          "type": "number"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "driverUid",
+        "displayName",
+        "type",
+        "routeLabel",
+        "occupancy",
+        "lat",
+        "lng",
+        "speedMps",
+        "heading",
+        "active",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WaitingCheckin": {
+      "title": "WaitingCheckin",
+      "description": "Active commuter check-in indicating someone is currently waiting at a loading zone.",
+      "type": "object",
+      "properties": {
+        "userUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "zoneId": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "zoneName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "vehicleWanted": {
+          "type": "string",
+          "enum": ["all", "jeep", "bus", "taxi"]
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userUid",
+        "zoneId",
+        "zoneName",
+        "vehicleWanted",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/community_zones/{zoneId}": {
+      "schema": {
+        "$ref": "#/entities/CommunityZone"
+      },
+      "description": "Community-pinned loading and unloading zones shared across all commuters."
+    },
+    "/zone_status_reports/{zoneId}": {
+      "schema": {
+        "$ref": "#/entities/ZoneStatusReport"
+      },
+      "description": "Live crowdsourced status updates for any loading zone."
+    },
+    "/vehicle_sightings/{sightingId}": {
+      "schema": {
+        "$ref": "#/entities/VehicleSighting"
+      },
+      "description": "Live commuter-reported approaching jeepneys, buses, and taxis."
+    },
+    "/live_trips/{tripId}": {
+      "schema": {
+        "$ref": "#/entities/LiveGpsTrip"
+      },
+      "description": "Live GPS broadcasts shared by drivers or riders currently on the road."
+    },
+    "/waiting_checkins/{checkinId}": {
+      "schema": {
+        "$ref": "#/entities/WaitingCheckin"
+      },
+      "description": "Real-time commuter waiting check-ins per loading zone."
+    }
+  }
+}

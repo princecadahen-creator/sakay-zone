@@ -7,6 +7,7 @@ interface ManageZonesPanelProps {
   zones: LoadingZone[];
   selectedZoneId: string | null;
   isPinMode: boolean;
+  currentUid: string | null;
   copy: CopyDictionary;
   onTogglePinMode: () => void;
   onSelectZone: (zoneId: string) => void;
@@ -20,6 +21,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
   zones,
   selectedZoneId,
   isPinMode,
+  currentUid,
   copy,
   onTogglePinMode,
   onSelectZone,
@@ -67,8 +69,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
   };
 
   const handleExport = () => {
-    const customOrEdited = zones;
-    const blob = new Blob([JSON.stringify(customOrEdited, null, 2)], {
+    const blob = new Blob([JSON.stringify(zones, null, 2)], {
       type: 'application/json',
     });
     const url = URL.createObjectURL(blob);
@@ -125,7 +126,6 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
       id="manage-stops"
       className="rounded-xl border border-slate-200 bg-white overflow-hidden"
     >
-      {/* Header & Coordinator Actions */}
       <div className="flex flex-col gap-4 border-b border-slate-200 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-bold tracking-tight text-slate-900">
@@ -192,7 +192,6 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
         </div>
       )}
 
-      {/* Zones Table / Management List */}
       <div className="divide-y divide-slate-100">
         {zones.length === 0 ? (
           <div className="px-6 py-10 text-center text-sm text-slate-500">
@@ -202,6 +201,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
           zones.map((zone) => {
             const isEditing = editingId === zone.id;
             const isSelected = zone.id === selectedZoneId;
+            const isOwner = Boolean(currentUid && zone.authorUid === currentUid);
 
             return (
               <div
@@ -316,7 +316,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
                       onClick={() => onSelectZone(zone.id)}
                       className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-slate-900 rounded"
                     >
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span
                           className={`text-sm font-bold ${
                             zone.hidden ? 'text-slate-400 line-through' : 'text-slate-900'
@@ -344,6 +344,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
                       <div className="mt-1 truncate text-xs text-slate-500">
                         {zone.allowedVehicles.map((v) => copy.vehicleLabels[v]).join(', ')} ·{' '}
                         {zone.address}
+                        {zone.authorName ? ` · Shared by ${zone.authorName}` : ''}
                       </div>
                     </button>
 
@@ -371,7 +372,7 @@ export const ManageZonesPanel: React.FC<ManageZonesPanelProps> = ({
                         <span>Edit</span>
                       </button>
 
-                      {zone.source === 'custom' && (
+                      {zone.source === 'custom' && (!zone.authorUid || isOwner) && (
                         <button
                           type="button"
                           onClick={() => onDeleteZone(zone.id)}

@@ -1,0 +1,296 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidCoordinate(lat, lng) {
+      return lat is number && lng is number && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+    }
+
+    function isValidVehicleType(v) {
+      return v is string && v in ['jeep', 'bus', 'taxi'];
+    }
+
+    function isValidOccupancy(v) {
+      return v is string && v in ['seats', 'standing', 'full'];
+    }
+
+    function isValidZoneRule(v) {
+      return v is string && v in ['loading_unloading', 'loading_only', 'unloading_only'];
+    }
+
+    function isValidZoneStatus(v) {
+      return v is string && v in ['active', 'congested', 'closed'];
+    }
+
+    function isValidAllowedVehicles(listVal) {
+      return listVal is list
+        && listVal.size() >= 1
+        && listVal.size() <= 3
+        && listVal[0] is string
+        && listVal.hasOnly(['jeep', 'bus', 'taxi']);
+    }
+
+    function isValidCommunityZone(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'address', 'lat', 'lng', 'allowedVehicles', 'ruleType',
+          'status', 'landmarkTip', 'fareRange', 'authorUid', 'authorName',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'address', 'lat', 'lng', 'allowedVehicles', 'ruleType',
+          'status', 'landmarkTip', 'fareRange', 'authorUid', 'authorName',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.address is string && data.address.size() >= 2 && data.address.size() <= 160
+        && isValidCoordinate(data.lat, data.lng)
+        && isValidAllowedVehicles(data.allowedVehicles)
+        && isValidZoneRule(data.ruleType)
+        && isValidZoneStatus(data.status)
+        && data.landmarkTip is string && data.landmarkTip.size() >= 2 && data.landmarkTip.size() <= 320
+        && data.fareRange is string && data.fareRange.size() >= 2 && data.fareRange.size() <= 60
+        && data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
+        && data.isPublic is bool && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidZoneStatusReport(data) {
+      return data.keys().hasAll([
+          'zoneId', 'zoneName', 'status', 'queueNote', 'reporterUid',
+          'reporterName', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'zoneId', 'zoneName', 'status', 'queueNote', 'reporterUid',
+          'reporterName', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.zoneId)
+        && data.zoneName is string && data.zoneName.size() >= 2 && data.zoneName.size() <= 120
+        && isValidZoneStatus(data.status)
+        && data.queueNote is string && data.queueNote.size() <= 180
+        && data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128
+        && data.reporterName is string && data.reporterName.size() >= 1 && data.reporterName.size() <= 60
+        && data.isPublic is bool && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVehicleSighting(data) {
+      return data.keys().hasAll([
+          'zoneId', 'zoneName', 'type', 'routeLabel', 'occupancy',
+          'etaMinutes', 'zoneLat', 'zoneLng', 'reporterUid',
+          'reporterName', 'isPublic', 'expiresAtMs', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'zoneId', 'zoneName', 'type', 'routeLabel', 'occupancy',
+          'etaMinutes', 'zoneLat', 'zoneLng', 'reporterUid',
+          'reporterName', 'isPublic', 'expiresAtMs', 'createdAt'
+        ])
+        && isValidId(data.zoneId)
+        && data.zoneName is string && data.zoneName.size() >= 2 && data.zoneName.size() <= 120
+        && isValidVehicleType(data.type)
+        && data.routeLabel is string && data.routeLabel.size() >= 2 && data.routeLabel.size() <= 120
+        && isValidOccupancy(data.occupancy)
+        && data.etaMinutes is number && data.etaMinutes >= 1 && data.etaMinutes <= 60
+        && isValidCoordinate(data.zoneLat, data.zoneLng)
+        && data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128
+        && data.reporterName is string && data.reporterName.size() >= 1 && data.reporterName.size() <= 60
+        && data.isPublic is bool && data.isPublic == true
+        && data.expiresAtMs is number && data.expiresAtMs > 0
+        && data.createdAt is timestamp;
+    }
+
+    function isValidLiveGpsTrip(data) {
+      return data.keys().hasAll([
+          'driverUid', 'displayName', 'type', 'routeLabel', 'occupancy',
+          'lat', 'lng', 'speedMps', 'heading', 'active',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'driverUid', 'displayName', 'type', 'routeLabel', 'occupancy',
+          'lat', 'lng', 'speedMps', 'heading', 'active',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.driverUid is string && data.driverUid.size() >= 1 && data.driverUid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
+        && isValidVehicleType(data.type)
+        && data.routeLabel is string && data.routeLabel.size() >= 2 && data.routeLabel.size() <= 120
+        && isValidOccupancy(data.occupancy)
+        && isValidCoordinate(data.lat, data.lng)
+        && data.speedMps is number && data.speedMps >= 0 && data.speedMps <= 60
+        && data.heading is number && data.heading >= 0 && data.heading <= 360
+        && data.active is bool
+        && data.isPublic is bool && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWaitingCheckin(data) {
+      return data.keys().hasAll([
+          'userUid', 'zoneId', 'zoneName', 'vehicleWanted',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userUid', 'zoneId', 'zoneName', 'vehicleWanted',
+          'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.userUid is string && data.userUid.size() >= 1 && data.userUid.size() <= 128
+        && isValidId(data.zoneId)
+        && data.zoneName is string && data.zoneName.size() >= 2 && data.zoneName.size() <= 120
+        && data.vehicleWanted is string && data.vehicleWanted in ['all', 'jeep', 'bus', 'taxi']
+        && data.isPublic is bool && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /community_zones/{zoneId} {
+      allow get: if isValidId(zoneId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(zoneId)
+        && isValidCommunityZone(incoming())
+        && incoming().id == zoneId
+        && incoming().authorUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(zoneId)
+        && isValidCommunityZone(incoming())
+        && incoming().id == existing().id
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().authorUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'address', 'allowedVehicles', 'ruleType', 'status',
+              'landmarkTip', 'fareRange', 'updatedAt'
+            ]))
+          || incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(zoneId)
+        && existing().authorUid == request.auth.uid;
+    }
+
+    match /zone_status_reports/{zoneId} {
+      allow get: if isValidId(zoneId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(zoneId)
+        && isValidZoneStatusReport(incoming())
+        && incoming().zoneId == zoneId
+        && incoming().reporterUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(zoneId)
+        && isValidZoneStatusReport(incoming())
+        && incoming().zoneId == existing().zoneId
+        && incoming().zoneName == existing().zoneName
+        && incoming().createdAt == existing().createdAt
+        && incoming().reporterUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'queueNote', 'reporterUid', 'reporterName', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser()
+        && isValidId(zoneId)
+        && existing().reporterUid == request.auth.uid;
+    }
+
+    match /vehicle_sightings/{sightingId} {
+      allow get: if isValidId(sightingId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(sightingId)
+        && isValidVehicleSighting(incoming())
+        && incoming().reporterUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerifiedUser()
+        && isValidId(sightingId)
+        && existing().reporterUid == request.auth.uid;
+    }
+
+    match /live_trips/{tripId} {
+      allow get: if isValidId(tripId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(tripId)
+        && tripId == request.auth.uid
+        && isValidLiveGpsTrip(incoming())
+        && incoming().driverUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(tripId)
+        && tripId == request.auth.uid
+        && existing().driverUid == request.auth.uid
+        && isValidLiveGpsTrip(incoming())
+        && incoming().driverUid == existing().driverUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'type', 'routeLabel', 'occupancy',
+          'lat', 'lng', 'speedMps', 'heading', 'active', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser()
+        && isValidId(tripId)
+        && existing().driverUid == request.auth.uid;
+    }
+
+    match /waiting_checkins/{checkinId} {
+      allow get: if isValidId(checkinId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(checkinId)
+        && checkinId == request.auth.uid
+        && isValidWaitingCheckin(incoming())
+        && incoming().userUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(checkinId)
+        && checkinId == request.auth.uid
+        && existing().userUid == request.auth.uid
+        && isValidWaitingCheckin(incoming())
+        && incoming().userUid == existing().userUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'zoneId', 'zoneName', 'vehicleWanted', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser()
+        && isValidId(checkinId)
+        && existing().userUid == request.auth.uid;
+    }
+  }
+}

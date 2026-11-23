@@ -24,6 +24,11 @@ export interface LoadingZone {
   landmarkTip: string;
   fareRange: string;
   hidden?: boolean;
+  authorUid?: string;
+  authorName?: string;
+  queueNote?: string;
+  statusUpdatedAtMs?: number;
+  statusReporterName?: string;
 }
 
 export interface TrackedVehicle {
@@ -36,7 +41,6 @@ export interface TrackedVehicle {
   occupancy: 'seats' | 'standing' | 'full';
   fareText: string;
   path: LatLngPoint[];
-  /** Normalized progress along `path` from 0 (approach start) to 1 (loading zone) */
   progress: number;
   speedMps: number;
   totalMeters: number;
@@ -45,5 +49,93 @@ export interface TrackedVehicle {
   position: LatLngPoint;
   heading: number;
   targetZoneId: string;
-  isUserSpotted?: boolean;
+  liveMode: 'gps' | 'community';
+  reporterName?: string;
+  reportedAtMs?: number;
+  isSelf?: boolean;
+}
+
+export interface MappedTransitRoute {
+  id: string;
+  ref: string;
+  name: string;
+  mode: 'jeep' | 'bus' | 'rail' | 'ferry';
+  from?: string;
+  to?: string;
+  operator?: string;
+}
+
+export interface ZoneWeatherInfo {
+  temperatureC: number;
+  precipitationMm: number;
+  weatherCode: number;
+  isRainy: boolean;
+}
+
+export interface CommunityZoneRecord {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  allowedVehicles: VehicleType[];
+  ruleType: ZoneRuleType;
+  status: ZoneStatus;
+  landmarkTip: string;
+  fareRange: string;
+  authorUid: string;
+  authorName: string;
+  isPublic: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ZoneStatusReportRecord {
+  zoneId: string;
+  zoneName: string;
+  status: ZoneStatus;
+  queueNote: string;
+  reporterUid: string;
+  reporterName: string;
+  updatedAtMs: number;
+}
+
+export interface VehicleSightingRecord {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  type: VehicleType;
+  routeLabel: string;
+  occupancy: 'seats' | 'standing' | 'full';
+  etaMinutes: number;
+  zoneLat: number;
+  zoneLng: number;
+  reporterUid: string;
+  reporterName: string;
+  expiresAtMs: number;
+  createdAtMs: number;
+}
+
+export interface LiveGpsTripRecord {
+  tripId: string;
+  driverUid: string;
+  displayName: string;
+  type: VehicleType;
+  routeLabel: string;
+  occupancy: 'seats' | 'standing' | 'full';
+  lat: number;
+  lng: number;
+  speedMps: number;
+  heading: number;
+  active: boolean;
+  updatedAtMs: number;
+}
+
+export interface WaitingCheckinRecord {
+  checkinId: string;
+  userUid: string;
+  zoneId: string;
+  zoneName: string;
+  vehicleWanted: 'all' | VehicleType;
+  updatedAtMs: number;
 }

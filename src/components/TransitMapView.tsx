@@ -12,6 +12,8 @@ interface TransitMapViewProps {
   vehicles: TrackedVehicle[];
   selectedVehicleId: string | null;
   userLocation: LatLngPoint | null;
+  walkingPath: LatLngPoint[] | null;
+  waitingCountsByZone: Record<string, number>;
   isPinMode: boolean;
   copy: CopyDictionary;
   onSelectZone: (zoneId: string) => void;
@@ -19,10 +21,7 @@ interface TransitMapViewProps {
   onDropCustomZonePin: (location: LatLngPoint) => void;
 }
 
-const VEHICLE_META: Record<
-  VehicleType,
-  {hex: string; short: string}
-> = {
+const VEHICLE_META: Record<VehicleType, {hex: string; short: string}> = {
   jeep: {hex: '#D97706', short: 'JEEP'},
   bus: {hex: '#2563EB', short: 'BUS'},
   taxi: {hex: '#059669', short: 'TAXI'},
@@ -51,6 +50,8 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
   vehicles,
   selectedVehicleId,
   userLocation,
+  walkingPath,
+  waitingCountsByZone,
   isPinMode,
   copy,
   onSelectZone,
@@ -78,7 +79,6 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
   const lastCameraRef = useRef<string>('');
 
-  // Initialize Leaflet map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -114,7 +114,6 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
     };
   }, []);
 
-  // Sync camera center/zoom when area or zone changes
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -125,14 +124,12 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
     }
   }, [center, zoom]);
 
-  // Update cursor in Pin Mode
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     el.style.cursor = isPinMode ? 'crosshair' : '';
   }, [isPinMode]);
 
-  // Render User Location dot
   useEffect(() => {
     const layer = userLayerRef.current;
     if (!layer) return;
@@ -151,30 +148,37 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       .addTo(layer);
   }, [userLocation]);
 
-  // Render Road Polylines
+  // Render Walking Path (user -> zone) + Live Vehicle Approach Lines
   useEffect(() => {
     const layer = polylinesLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
 
-    const seenKeys: Record<string, boolean> = {};
+    if (walkingPath && walkingPath.length >= 2) {
+      L.polyline(
+        walkingPath.map((pt) => [pt.lat, pt.lng] as [number, number]),
+        {
+          color: '#0F172A',
+          weight: 3.5,
+          opacity: 0.75,
+          dashArray: '6 6',
+        }
+      ).addTo(layer);
+    }
+
     for (const veh of vehicles) {
       if (veh.path.length < 2) continue;
-      const key = `${veh.path[0].lat.toFixed(4)},${veh.path[0].lng.toFixed(4)}-${veh.type}`;
       const isFocused = veh.id === selectedVehicleId;
-      if (seenKeys[key] && !isFocused) continue;
-      seenKeys[key] = true;
-
       L.polyline(
         veh.path.map((pt) => [pt.lat, pt.lng] as [number, number]),
         {
           color: VEHICLE_META[veh.type].hex,
-          weight: isFocused ? 5 : 3,
+          weight: isFocused ? 4.5 : 2.5,
           opacity: isFocused ? 0.9 : 0.45,
         }
       ).addTo(layer);
     }
-  }, [vehicles, selectedVehicleId]);
+  }, [vehicles, selectedVehicleId, walkingPath]);
 
   // Render Loading & Unloading Zone Markers
   useEffect(() => {
@@ -186,6 +190,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
     for (const zone of visibleZones) {
       const isSelected = zone.id === selectedZoneId;
+      const waitingCount = waitingCountsByZone[zone.id] ?? 0;
       const bg =
         zone.status === 'closed'
           ? '#BE123C'
@@ -202,13 +207,14 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       const safeStatus = escapeHtml(copy.statuses[zone.status]);
       const safeAddress = escapeHtml(zone.address);
       const safeTip = escapeHtml(zone.landmarkTip);
+      const safeQueue = zone.queueNote ? escapeHtml(zone.queueNote) : '';
 
       const icon = L.divIcon({
         className: 'sakayzone-zone-marker',
         html: `
           <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-100%);">
-            <div style="background:${bg};color:${fg};border:1.5px solid ${border};border-radius:6px;padding:3px 8px;font-family:'Plus Jakarta Sans',sans-serif;font-size:11px;font-weight:700;white-space:nowrap;max-width:165px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(15,23,42,0.18);">
-              ${safeName}
+            <div style="background:${bg};color:${fg};border:1.5px solid ${border};border-radius:6px;padding:3px 8px;font-family:'Plus Jakarta Sans',sans-serif;font-size:11px;font-weight:700;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(15,23,42,0.18);">
+              ${safeName}${waitingCount > 0 ? ` (${waitingCount})` : ''}
             </div>
             <div style="width:8px;height:8px;background:${bg};border-right:1.5px solid ${border};border-bottom:1.5px solid ${border};transform:rotate(45deg);margin-top:-4px;"></div>
           </div>
@@ -223,10 +229,12 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       });
 
       marker.bindPopup(
-        `<div style="min-width:200px;font-family:'DM Sans',sans-serif;">
+        `<div style="min-width:205px;font-family:'DM Sans',sans-serif;">
           <div style="font-size:11px;font-weight:600;color:#64748B;">${safeRule} · ${safeStatus}</div>
           <div style="margin-top:2px;font-size:13px;font-weight:700;color:#0F172A;">${safeName}</div>
           <div style="margin-top:3px;font-size:11px;color:#475569;">${safeAddress}</div>
+          ${waitingCount > 0 ? `<div style="margin-top:4px;font-size:11px;font-weight:700;color:#0F172A;">${waitingCount} ${escapeHtml(copy.waitingHereSuffix)}</div>` : ''}
+          ${safeQueue ? `<div style="margin-top:4px;font-size:11px;color:#B45309;">${safeQueue}</div>` : ''}
           <div style="margin-top:5px;font-size:11px;color:#334155;">${safeTip}</div>
         </div>`
       );
@@ -237,9 +245,9 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
       marker.addTo(layer);
     }
-  }, [zones, selectedZoneId, copy]);
+  }, [zones, selectedZoneId, waitingCountsByZone, copy]);
 
-  // Render Live Moving Vehicles
+  // Render ONLY Real Live GPS Vehicles & Real Community Sightings
   useEffect(() => {
     const layer = vehiclesLayerRef.current;
     if (!layer) return;
@@ -250,16 +258,19 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       const meta = VEHICLE_META[veh.type];
       const etaText = escapeHtml(formatEtaShort(veh.etaSeconds, copy));
       const safeType = escapeHtml(copy.vehicleLabels[veh.type]);
-      const safePlate = escapeHtml(veh.plateNumber);
-      const safeCode = escapeHtml(veh.routeCode);
-      const safeDest = escapeHtml(veh.destination);
-      const safeFare = escapeHtml(veh.fareText);
+      const safeSource = escapeHtml(
+        veh.liveMode === 'gps' ? copy.liveGpsLabel : copy.communityReportedLabel
+      );
+      const safeRoute = escapeHtml(veh.routeLabel);
+      const safeReporter = escapeHtml(veh.reporterName || veh.plateNumber);
       const distText =
         veh.distanceMeters >= 1000
           ? `${(veh.distanceMeters / 1000).toFixed(1)} ${escapeHtml(copy.kmShort)}`
           : `${veh.distanceMeters} ${escapeHtml(copy.mShort)}`;
 
-      const ringStyle = isSelected ? 'box-shadow:0 0 0 2px #0F172A,0 4px 10px rgba(0,0,0,0.28);transform:scale(1.08);' : 'box-shadow:0 2px 6px rgba(0,0,0,0.22);';
+      const ringStyle = isSelected
+        ? 'box-shadow:0 0 0 2px #0F172A,0 4px 10px rgba(0,0,0,0.28);transform:scale(1.08);'
+        : 'box-shadow:0 2px 6px rgba(0,0,0,0.22);';
 
       const icon = L.divIcon({
         className: 'sakayzone-vehicle-marker',
@@ -268,7 +279,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
             <div style="background:${meta.hex};color:#fff;border-radius:6px;padding:3px 7px;display:flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;white-space:nowrap;${ringStyle}">
               <span>${meta.short}</span>
               <span>·</span>
-              <span>${etaText}</span>
+              <span>${veh.liveMode === 'gps' ? 'GPS' : etaText}</span>
             </div>
             <div style="margin-top:2px;width:14px;height:14px;border-radius:9999px;background:#fff;border:1.5px solid #CBD5E1;display:flex;align-items:center;justify-content:center;transform:rotate(${Math.round(
               veh.heading
@@ -283,15 +294,16 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
       const marker = L.marker([veh.position.lat, veh.position.lng], {
         icon,
-        zIndexOffset: isSelected ? 950 : 600,
+        zIndexOffset: isSelected ? 950 : 650,
       });
 
       marker.bindPopup(
-        `<div style="min-width:190px;font-family:'DM Sans',sans-serif;">
-          <div style="font-size:11px;font-weight:600;color:#64748B;">${safeType} · ${safePlate}</div>
-          <div style="margin-top:2px;font-size:13px;font-weight:700;color:#0F172A;">${safeCode} — ${safeDest}</div>
+        `<div style="min-width:195px;font-family:'DM Sans',sans-serif;">
+          <div style="font-size:11px;font-weight:700;color:${meta.hex};">${safeType} · ${safeSource}</div>
+          <div style="margin-top:2px;font-size:13px;font-weight:700;color:#0F172A;">${safeRoute}</div>
+          <div style="margin-top:3px;font-size:11px;color:#475569;">By: ${safeReporter}</div>
           <div style="margin-top:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#0F172A;">
-            <strong>${etaText}</strong> · ${distText} · ${safeFare}
+            <strong>${etaText}</strong> · ${distText}
           </div>
         </div>`
       );
@@ -308,7 +320,6 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
     <div className="relative h-full w-full min-h-[460px] overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
       <div ref={containerRef} className="h-full w-full min-h-[460px] z-0" />
 
-      {/* Map Pin Mode Banner */}
       {isPinMode && (
         <div className="pointer-events-none absolute inset-x-4 top-4 z-[500] flex justify-center">
           <div className="rounded-lg border border-slate-900 bg-slate-900/95 px-4 py-2 text-xs font-medium text-white shadow-lg">
@@ -317,7 +328,6 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
         </div>
       )}
 
-      {/* Map Legend Strip (Bottom Left) */}
       <div className="pointer-events-none absolute bottom-3 left-3 z-[400] hidden sm:flex items-center gap-4 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur-sm">
         <div className="flex items-center gap-1.5">
           <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-600" />

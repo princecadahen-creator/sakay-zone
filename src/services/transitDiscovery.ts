@@ -1,4 +1,14 @@
-import type {LatLngPoint, LoadingZone, TrackedVehicle, VehicleType, ZoneRuleType} from '../types/transit';
+import type {
+  LatLngPoint,
+  LiveGpsTripRecord,
+  LoadingZone,
+  MappedTransitRoute,
+  TrackedVehicle,
+  VehicleSightingRecord,
+  VehicleType,
+  ZoneRuleType,
+  ZoneWeatherInfo,
+} from '../types/transit';
 
 /**
  * Haversine distance in meters between two coordinates.
@@ -28,66 +38,6 @@ export function bearingDegrees(from: LatLngPoint, to: LatLngPoint): number {
     Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
   const brng = (Math.atan2(y, x) * 180) / Math.PI;
   return (brng + 360) % 360;
-}
-
-/**
- * Computes total path length in meters and interpolates a point + heading at normalized t in [0, 1].
- */
-export function interpolateAlongPath(
-  path: LatLngPoint[],
-  t: number
-): {position: LatLngPoint; heading: number; totalMeters: number} {
-  if (path.length === 0) {
-    return {position: {lat: 14.5995, lng: 120.9842}, heading: 0, totalMeters: 0};
-  }
-  if (path.length === 1) {
-    return {position: path[0], heading: 0, totalMeters: 0};
-  }
-
-  const segLengths: number[] = [];
-  let totalMeters = 0;
-  for (let i = 0; i < path.length - 1; i++) {
-    const len = distanceMetersBetween(path[i], path[i + 1]);
-    segLengths.push(len);
-    totalMeters += len;
-  }
-
-  if (totalMeters <= 0.5) {
-    return {
-      position: path[path.length - 1],
-      heading: bearingDegrees(path[0], path[path.length - 1]),
-      totalMeters: 1,
-    };
-  }
-
-  const clamped = Math.max(0, Math.min(1, t));
-  const targetDist = clamped * totalMeters;
-  let accum = 0;
-
-  for (let i = 0; i < segLengths.length; i++) {
-    const segLen = segLengths[i];
-    if (accum + segLen >= targetDist || i === segLengths.length - 1) {
-      const localT = segLen > 0 ? (targetDist - accum) / segLen : 0;
-      const p1 = path[i];
-      const p2 = path[i + 1];
-      return {
-        position: {
-          lat: p1.lat + (p2.lat - p1.lat) * localT,
-          lng: p1.lng + (p2.lng - p1.lng) * localT,
-        },
-        heading: bearingDegrees(p1, p2),
-        totalMeters,
-      };
-    }
-    accum += segLen;
-  }
-
-  const lastIdx = path.length - 1;
-  return {
-    position: path[lastIdx],
-    heading: bearingDegrees(path[lastIdx - 1], path[lastIdx]),
-    totalMeters,
-  };
 }
 
 interface OverpassElement {
@@ -126,8 +76,8 @@ function inferRuleFromName(name: string): ZoneRuleType {
 
 /**
  * Discovers real nearby transit stops, terminals, bus stops, and taxi stands
- * using the 100% free OpenStreetMap Overpass API, with a road-snapped OSRM fallback
- * so quiet provincial areas still show usable loading/unloading points.
+ * using the free OpenStreetMap Overpass API, with a road-snapped OSRM fallback
+ * so smaller Philippine towns still offer road-snapped pickup points.
  */
 export async function discoverNearbyLoadingZones(
   center: LatLngPoint,
@@ -138,14 +88,14 @@ export async function discoverNearbyLoadingZones(
   const query = `
     [out:json][timeout:6];
     (
-      node["highway"="bus_stop"](around:1500,${center.lat},${center.lng});
-      node["amenity"="bus_station"](around:1500,${center.lat},${center.lng});
-      way["amenity"="bus_station"](around:1500,${center.lat},${center.lng});
-      node["amenity"="taxi"](around:1500,${center.lat},${center.lng});
-      node["public_transport"="platform"](around:1500,${center.lat},${center.lng});
-      node["railway"~"station|halt"](around:1500,${center.lat},${center.lng});
+      node["highway"="bus_stop"](around:1800,${center.lat},${center.lng});
+      node["amenity"="bus_station"](around:1800,${center.lat},${center.lng});
+      way["amenity"="bus_station"](around:1800,${center.lat},${center.lng});
+      node["amenity"="taxi"](around:1800,${center.lat},${center.lng});
+      node["public_transport"="platform"](around:1800,${center.lat},${center.lng});
+      node["railway"~"station|halt"](around:1800,${center.lat},${center.lng});
     );
-    out center 12;
+    out center 15;
   `;
 
   try {
@@ -189,7 +139,7 @@ export async function discoverNearbyLoadingZones(
           allowedVehicles,
           ruleType: inferRuleFromName(name),
           status: 'active',
-          landmarkTip: `Located near ${street}. Stand safely behind the curb and check vehicle signboards before boarding.`,
+          landmarkTip: `OpenStreetMap transit stop near ${street}. Stand safely behind the curb and verify the vehicle signboard before boarding.`,
           fareRange: allowedVehicles.includes('bus') ? '₱13 – ₱35' : '₱13 – ₱20',
         };
       }
@@ -198,24 +148,17 @@ export async function discoverNearbyLoadingZones(
     // Gracefully fall through to OSRM road-snapped stops if Overpass times out
   }
 
-  // If Overpass returned fewer than 2 stops (common in smaller towns/barangays),
-  // snap up to 3 realistic roadside loading/unloading points to actual streets via free OSRM Nearest API
   if (Object.keys(zonesById).length < 2) {
     const candidateOffsets: Array<{offset: LatLngPoint; suffix: string; vehicles: VehicleType[]}> = [
       {
         offset: {lat: center.lat, lng: center.lng},
-        suffix: 'Main Loading / Unloading Bay',
+        suffix: 'Roadside Loading Bay',
         vehicles: ['jeep', 'bus', 'taxi'],
       },
       {
-        offset: {lat: center.lat + 0.0032, lng: center.lng + 0.0022},
-        suffix: 'Northbound Sakayan / Stop',
+        offset: {lat: center.lat + 0.0028, lng: center.lng + 0.0018},
+        suffix: 'Northbound Roadside Stop',
         vehicles: ['jeep', 'taxi'],
-      },
-      {
-        offset: {lat: center.lat - 0.003, lng: center.lng - 0.0024},
-        suffix: 'Southbound Highway Stop',
-        vehicles: ['jeep', 'bus', 'taxi'],
       },
     ];
 
@@ -246,8 +189,10 @@ export async function discoverNearbyLoadingZones(
         }
 
         const labelBase = streetName || areaLabel || 'Town Center';
+        const latKey = finalLoc.lat.toFixed(4).replace('.', '_');
+        const lngKey = finalLoc.lng.toFixed(4).replace('.', '_');
         const zone: LoadingZone = {
-          id: `road-${idx}-${finalLoc.lat.toFixed(4)}-${finalLoc.lng.toFixed(4)}`,
+          id: `road-${idx}-${latKey}-${lngKey}`,
           name: `${labelBase} — ${item.suffix}`,
           address: streetName,
           location: finalLoc,
@@ -255,7 +200,7 @@ export async function discoverNearbyLoadingZones(
           allowedVehicles: item.vehicles,
           ruleType: 'loading_unloading',
           status: 'active',
-          landmarkTip: `Roadside loading/unloading point along ${streetName}. You can also pin exact local stops under Manage Stops.`,
+          landmarkTip: `Road-snapped point along ${streetName}. Pin exact local terminals or tricycle/jeepney waiting sheds under Manage Stops to help commuters.`,
           fareRange: item.vehicles.includes('bus') ? '₱13 – ₱35' : '₱13 – ₱20',
         };
         return zone;
@@ -275,174 +220,228 @@ export async function discoverNearbyLoadingZones(
 }
 
 /**
- * Fetches a real driving road path using free OSRM routing.
+ * Discovers REAL mapped public transit routes (jeepney/share_taxi, bus, rail, ferry)
+ * passing near the searched location via OpenStreetMap Overpass API.
  */
-async function fetchOsrmRoadPath(
-  origin: LatLngPoint,
-  destination: LatLngPoint
-): Promise<LatLngPoint[]> {
+export async function discoverMappedRoutesNear(
+  center: LatLngPoint
+): Promise<MappedTransitRoute[]> {
+  const query = `
+    [out:json][timeout:6];
+    relation["route"~"bus|share_taxi|minibus|light_rail|subway|rail|ferry"](around:1200,${center.lat},${center.lng});
+    out tags 18;
+  `;
+
   try {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 4500);
-    const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url, {signal: controller.signal});
+    const timer = window.setTimeout(() => controller.abort(), 5500);
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+    });
     window.clearTimeout(timer);
 
-    if (res.ok) {
-      const json = (await res.json()) as {
-        routes?: Array<{geometry?: {coordinates?: Array<[number, number]>}}>;
-      };
-      const coords = json.routes?.[0]?.geometry?.coordinates;
-      if (Array.isArray(coords) && coords.length >= 2) {
-        return coords.map(([lng, lat]) => ({lat, lng}));
+    if (!res.ok) return [];
+    const data = (await res.json()) as {elements?: OverpassElement[]};
+    const seenNames: Record<string, boolean> = {};
+    const routes: MappedTransitRoute[] = [];
+
+    for (const el of data.elements ?? []) {
+      const tags = el.tags ?? {};
+      const routeType = tags.route ?? 'bus';
+      const name = tags.name || `${tags.from ?? 'Origin'} → ${tags.to ?? 'Destination'}`;
+      if (!name || seenNames[name]) continue;
+      seenNames[name] = true;
+
+      let mode: MappedTransitRoute['mode'] = 'bus';
+      if (routeType === 'share_taxi' || routeType === 'minibus' || name.toLowerCase().includes('jeep')) {
+        mode = 'jeep';
+      } else if (routeType === 'light_rail' || routeType === 'subway' || routeType === 'rail') {
+        mode = 'rail';
+      } else if (routeType === 'ferry') {
+        mode = 'ferry';
       }
+
+      routes.push({
+        id: `route-${el.id}`,
+        ref: tags.ref || (mode === 'jeep' ? 'PUJ' : mode === 'rail' ? 'RAIL' : 'BUS'),
+        name,
+        mode,
+        from: tags.from,
+        to: tags.to,
+        operator: tags.operator,
+      });
     }
+
+    return routes.slice(0, 12);
   } catch {
-    // Fallback below
+    return [];
   }
-  return [origin, destination];
 }
 
 /**
- * Builds approaching Jeepney, Bus, and Taxi units along real OSRM road corridors
- * heading into the selected LoadingZone.
+ * Fetches REAL live current weather at the selected Loading Zone using Open-Meteo (free, no key).
  */
-export async function buildApproachingFleetForZone(
-  targetZone: LoadingZone,
-  allZones: LoadingZone[]
-): Promise<TrackedVehicle[]> {
-  const otherZones = allZones.filter((z) => z.id !== targetZone.id && !z.hidden);
+export async function fetchZoneWeather(loc: LatLngPoint): Promise<ZoneWeatherInfo | null> {
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4500);
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat.toFixed(4)}&longitude=${loc.lng.toFixed(4)}&current=temperature_2m,precipitation,weather_code`;
+    const res = await fetch(url, {signal: controller.signal});
+    window.clearTimeout(timer);
+    if (!res.ok) return null;
 
-  const fallbackOffsets: LatLngPoint[] = [
-    {lat: targetZone.location.lat + 0.0085, lng: targetZone.location.lng - 0.0065},
-    {lat: targetZone.location.lat - 0.0095, lng: targetZone.location.lng - 0.0045},
-    {lat: targetZone.location.lat + 0.0055, lng: targetZone.location.lng + 0.0095},
-  ];
+    const json = (await res.json()) as {
+      current?: {
+        temperature_2m?: number;
+        precipitation?: number;
+        weather_code?: number;
+      };
+    };
+    const cur = json.current;
+    if (!cur || typeof cur.temperature_2m !== 'number') return null;
 
-  const approachOrigins: Array<{origin: LatLngPoint; label: string}> = [];
-  for (let i = 0; i < 3; i++) {
-    const neighbor = otherZones[i];
-    if (neighbor && distanceMetersBetween(neighbor.location, targetZone.location) > 250) {
-      approachOrigins.push({
-        origin: neighbor.location,
-        label: neighbor.name.split('—')[0].trim().slice(0, 24),
-      });
-    } else {
-      approachOrigins.push({
-        origin: fallbackOffsets[i],
-        label: i === 0 ? 'North Approach' : i === 1 ? 'South Approach' : 'East Approach',
-      });
-    }
-  }
-
-  const computedPaths = await Promise.all(
-    approachOrigins.map((item) => fetchOsrmRoadPath(item.origin, targetZone.location))
-  );
-
-  const zoneShort = targetZone.name.split('—')[0].trim().slice(0, 24);
-  const templates: Array<{
-    type: VehicleType;
-    routeCode: string;
-    routeLabel: string;
-    plateNumber: string;
-    occupancy: 'seats' | 'standing' | 'full';
-    fareText: string;
-    initialProgress: number;
-    speedMps: number;
-    pathIdx: number;
-  }> = [
-    {
-      type: 'jeep',
-      routeCode: 'J-14',
-      routeLabel: `${approachOrigins[0].label} → ${zoneShort}`,
-      plateNumber: 'PYJ 482',
-      occupancy: 'seats',
-      fareText: '₱13.00 min',
-      initialProgress: 0.72,
-      speedMps: 6.8,
-      pathIdx: 0,
-    },
-    {
-      type: 'jeep',
-      routeCode: 'J-08',
-      routeLabel: `${approachOrigins[1].label} → ${zoneShort}`,
-      plateNumber: 'NVA 915',
-      occupancy: 'standing',
-      fareText: '₱13.00 min',
-      initialProgress: 0.38,
-      speedMps: 6.4,
-      pathIdx: 1,
-    },
-    {
-      type: 'bus',
-      routeCode: 'B-22',
-      routeLabel: `Highway Loop → ${zoneShort}`,
-      plateNumber: 'BHS 704',
-      occupancy: 'seats',
-      fareText: '₱15.00 min',
-      initialProgress: 0.56,
-      speedMps: 7.4,
-      pathIdx: 2,
-    },
-    {
-      type: 'bus',
-      routeCode: 'B-05',
-      routeLabel: `${approachOrigins[1].label} → ${zoneShort}`,
-      plateNumber: 'EAB 331',
-      occupancy: 'full',
-      fareText: '₱15.00 min',
-      initialProgress: 0.22,
-      speedMps: 7.1,
-      pathIdx: 1,
-    },
-    {
-      type: 'taxi',
-      routeCode: 'TX-1',
-      routeLabel: `Metered Taxi · ${approachOrigins[2].label}`,
-      plateNumber: 'TXN 619',
-      occupancy: 'seats',
-      fareText: '₱45 flagdown',
-      initialProgress: 0.81,
-      speedMps: 9.2,
-      pathIdx: 2,
-    },
-    {
-      type: 'taxi',
-      routeCode: 'TX-4',
-      routeLabel: `Metered Taxi · ${approachOrigins[0].label}`,
-      plateNumber: 'UVT 208',
-      occupancy: 'seats',
-      fareText: '₱45 flagdown',
-      initialProgress: 0.46,
-      speedMps: 8.6,
-      pathIdx: 0,
-    },
-  ];
-
-  return templates.map((tpl, idx) => {
-    const path = computedPaths[tpl.pathIdx] ?? [fallbackOffsets[0], targetZone.location];
-    const interp = interpolateAlongPath(path, tpl.initialProgress);
-    const remainingMeters = Math.max(20, Math.round(interp.totalMeters * (1 - tpl.initialProgress)));
-    const etaSeconds = Math.max(15, Math.round(remainingMeters / tpl.speedMps));
+    const code = Number(cur.weather_code ?? 0);
+    const precip = Number(cur.precipitation ?? 0);
+    const isRainy = precip > 0.1 || (code >= 51 && code <= 99);
 
     return {
-      id: `${targetZone.id}-veh-${idx}`,
-      type: tpl.type,
-      routeCode: tpl.routeCode,
-      routeLabel: tpl.routeLabel,
-      destination: zoneShort,
-      plateNumber: tpl.plateNumber,
-      occupancy: tpl.occupancy,
-      fareText: tpl.fareText,
-      path,
-      progress: tpl.initialProgress,
-      speedMps: tpl.speedMps,
-      totalMeters: interp.totalMeters,
-      distanceMeters: remainingMeters,
-      etaSeconds,
-      position: interp.position,
-      heading: interp.heading,
-      targetZoneId: targetZone.id,
+      temperatureC: Math.round(cur.temperature_2m),
+      precipitationMm: Number(precip.toFixed(1)),
+      weatherCode: code,
+      isRainy,
     };
-  });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetches REAL walking distance, walking time, and path from user GPS to selected Loading Zone via OSRM.
+ */
+export async function fetchWalkingRouteSummary(
+  origin: LatLngPoint,
+  destination: LatLngPoint
+): Promise<{distanceMeters: number; durationSeconds: number; path: LatLngPoint[]} | null> {
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4500);
+    const url = `https://router.project-osrm.org/route/v1/foot/${origin.lng},${origin.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url, {signal: controller.signal});
+    window.clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const json = (await res.json()) as {
+      routes?: Array<{
+        distance?: number;
+        duration?: number;
+        geometry?: {coordinates?: Array<[number, number]>};
+      }>;
+    };
+    const route = json.routes?.[0];
+    if (!route?.geometry?.coordinates || route.geometry.coordinates.length < 2) return null;
+
+    return {
+      distanceMeters: Math.round(route.distance ?? distanceMetersBetween(origin, destination)),
+      durationSeconds: Math.round(route.duration ?? 60),
+      path: route.geometry.coordinates.map(([lng, lat]) => ({lat, lng})),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Combines ONLY genuine real-time GPS trips and live community sightings
+ * approaching or reported near the selected Loading Zone. Zero fake/demo units.
+ */
+export function computeLiveVehiclesForZone(
+  liveTrips: LiveGpsTripRecord[],
+  sightings: VehicleSightingRecord[],
+  targetZone: LoadingZone,
+  currentUid: string | null
+): TrackedVehicle[] {
+  const result: TrackedVehicle[] = [];
+  const zoneShort = targetZone.name.split('—')[0].trim().slice(0, 24);
+  const now = Date.now();
+
+  // 1. Live driver/passenger GPS trips within 18 km of the selected zone
+  for (const trip of liveTrips) {
+    const tripPos: LatLngPoint = {lat: trip.lat, lng: trip.lng};
+    const dist = Math.round(distanceMetersBetween(tripPos, targetZone.location));
+    if (dist > 18000) continue;
+
+    const effectiveSpeed = Math.max(4.5, trip.speedMps > 0.8 ? trip.speedMps : 6.2);
+    const etaSeconds = Math.max(20, Math.round(dist / effectiveSpeed));
+    const heading =
+      trip.heading > 0 ? trip.heading : bearingDegrees(tripPos, targetZone.location);
+
+    result.push({
+      id: `gps-${trip.tripId}`,
+      type: trip.type,
+      routeCode: 'LIVE GPS',
+      routeLabel: trip.routeLabel,
+      destination: zoneShort,
+      plateNumber: trip.displayName,
+      occupancy: trip.occupancy,
+      fareText: trip.type === 'taxi' ? '₱45 flagdown' : '₱13.00 min',
+      path: [tripPos, targetZone.location],
+      progress: 0,
+      speedMps: effectiveSpeed,
+      totalMeters: dist,
+      distanceMeters: dist,
+      etaSeconds,
+      position: tripPos,
+      heading,
+      targetZoneId: targetZone.id,
+      liveMode: 'gps',
+      reporterName: trip.displayName,
+      reportedAtMs: trip.updatedAtMs,
+      isSelf: Boolean(currentUid && trip.driverUid === currentUid),
+    });
+  }
+
+  // 2. Real community sightings matching this zone (or within 600m) and not expired
+  for (const sight of sightings) {
+    if (sight.expiresAtMs <= now) continue;
+    const sightZonePos: LatLngPoint = {lat: sight.zoneLat, lng: sight.zoneLng};
+    const isSameZone = sight.zoneId === targetZone.id;
+    const nearTarget = distanceMetersBetween(sightZonePos, targetZone.location) <= 600;
+    if (!isSameZone && !nearTarget) continue;
+
+    const elapsedSec = Math.max(0, Math.round((now - sight.createdAtMs) / 1000));
+    const remainingSec = Math.max(30, sight.etaMinutes * 60 - elapsedSec);
+    const estMeters = Math.max(60, Math.round(remainingSec * 6.0));
+    const markerPos: LatLngPoint = {
+      lat: targetZone.location.lat + 0.0018,
+      lng: targetZone.location.lng - 0.0015,
+    };
+
+    result.push({
+      id: `sight-${sight.id}`,
+      type: sight.type,
+      routeCode: 'SPOTTED',
+      routeLabel: sight.routeLabel,
+      destination: sight.zoneName.split('—')[0].trim().slice(0, 24),
+      plateNumber: sight.reporterName,
+      occupancy: sight.occupancy,
+      fareText: sight.type === 'taxi' ? '₱45 flagdown' : '₱13.00 min',
+      path: [markerPos, targetZone.location],
+      progress: 0,
+      speedMps: 6.0,
+      totalMeters: estMeters,
+      distanceMeters: estMeters,
+      etaSeconds: remainingSec,
+      position: markerPos,
+      heading: bearingDegrees(markerPos, targetZone.location),
+      targetZoneId: targetZone.id,
+      liveMode: 'community',
+      reporterName: sight.reporterName,
+      reportedAtMs: sight.createdAtMs,
+    });
+  }
+
+  return result.sort((a, b) => a.etaSeconds - b.etaSeconds);
 }
