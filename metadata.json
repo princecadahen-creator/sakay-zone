@@ -1,0 +1,6 @@
+{
+  "name": "SakayZone",
+  "description": "Live commuter monitor for jeepneys, buses, and taxis approaching loading and unloading zones, with area guides for newcomers.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
