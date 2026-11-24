@@ -1,5 +1,7 @@
-import React, {useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {
+  Bell,
+  BellOff,
   Bus,
   BusFront,
   CarTaxiFront,
@@ -9,6 +11,7 @@ import {
   Plus,
   Radio,
   Route,
+  Search,
   TriangleAlert,
   Users,
 } from 'lucide-react';
@@ -24,16 +27,21 @@ import type {
 interface ArrivalsBoardProps {
   selectedZone: LoadingZone | null;
   vehicles: TrackedVehicle[];
+  allZoneVehicles: TrackedVehicle[];
   selectedVehicleId: string | null;
   activeFilter: 'all' | VehicleType;
   isLoadingZones: boolean;
   mappedRoutes: MappedTransitRoute[];
+  selectedRouteId: string | null;
   isLoadingRoutes: boolean;
   waitingCount: number;
   isUserWaitingHere: boolean;
   isSignedIn: boolean;
   copy: CopyDictionary;
   onSelectVehicle: (vehicleId: string) => void;
+  onSelectRoute: (route: MappedTransitRoute | null) => void;
+  onChangeFilter: (filter: 'all' | VehicleType) => void;
+  onShareLiveRide: (presetType?: VehicleType) => void;
   onRequireAuth: () => void;
   onSpotVehicle: (payload: {
     type: VehicleType;
@@ -54,6 +62,11 @@ function formatDistance(meters: number, copy: CopyDictionary): string {
 
 function formatEta(seconds: number, copy: CopyDictionary): string {
   if (seconds <= 35) return copy.arrivingNow;
+  if (seconds < 600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  }
   const mins = Math.max(1, Math.round(seconds / 60));
   return `${mins} ${copy.minShort}`;
 }
@@ -67,19 +80,50 @@ function formatAgo(timestampMs: number | undefined): string {
   return `${Math.floor(mins / 60)}h ago`;
 }
 
+function playArrivalChime(): void {
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as {webkitAudioContext?: typeof AudioContext}).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    const notes = [587.33, 880];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + i * 0.12);
+      gain.gain.setValueAtTime(0.08, now + i * 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + i * 0.12);
+      osc.stop(now + i * 0.12 + 0.24);
+    });
+  } catch {
+    // Ignore audio context restrictions gracefully
+  }
+}
+
 export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
   selectedZone,
   vehicles,
+  allZoneVehicles,
   selectedVehicleId,
   activeFilter,
   isLoadingZones,
   mappedRoutes,
+  selectedRouteId,
   isLoadingRoutes,
   waitingCount,
   isUserWaitingHere,
   isSignedIn,
   copy,
   onSelectVehicle,
+  onSelectRoute,
+  onChangeFilter,
+  onShareLiveRide,
   onRequireAuth,
   onSpotVehicle,
   onToggleWaiting,
@@ -97,22 +141,57 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
   const [condNote, setCondNote] = useState('');
   const [isSubmittingCond, setIsSubmittingCond] = useState(false);
 
+  const [routeQuery, setRouteQuery] = useState('');
+  const [soundAlertEnabled, setSoundAlertEnabled] = useState(false);
+  const seenVehicleIdsRef = useRef<Set<string>>(new Set());
+
   const sortedVehicles = [...vehicles].sort((a, b) => a.etaSeconds - b.etaSeconds);
-  const jeepCount = sortedVehicles.filter((v) => v.type === 'jeep').length;
-  const busCount = sortedVehicles.filter((v) => v.type === 'bus').length;
-  const taxiCount = sortedVehicles.filter((v) => v.type === 'taxi').length;
+  const allSorted = [...allZoneVehicles].sort((a, b) => a.etaSeconds - b.etaSeconds);
+
+  useEffect(() => {
+    const currentIds = new Set(vehicles.map((v) => v.id));
+    if (soundAlertEnabled) {
+      let hasNewArrival = false;
+      for (const id of currentIds) {
+        if (!seenVehicleIdsRef.current.has(id)) {
+          hasNewArrival = true;
+          break;
+        }
+      }
+      if (hasNewArrival) {
+        playArrivalChime();
+      }
+    }
+    seenVehicleIdsRef.current = currentIds;
+  }, [vehicles, soundAlertEnabled]);
 
   const summaryParts: string[] = [];
-  if (jeepCount > 0) summaryParts.push(`${jeepCount} ${copy.jeep}`);
-  if (busCount > 0) summaryParts.push(`${busCount} ${copy.bus}`);
-  if (taxiCount > 0) summaryParts.push(`${taxiCount} ${copy.taxi}`);
+  const allJeepCount = allSorted.filter((v) => v.type === 'jeep').length;
+  const allBusCount = allSorted.filter((v) => v.type === 'bus').length;
+  const allTaxiCount = allSorted.filter((v) => v.type === 'taxi').length;
+  if (allJeepCount > 0) summaryParts.push(`${allJeepCount} ${copy.jeep}`);
+  if (allBusCount > 0) summaryParts.push(`${allBusCount} ${copy.bus}`);
+  if (allTaxiCount > 0) summaryParts.push(`${allTaxiCount} ${copy.taxi}`);
 
-  const handleOpenSpot = () => {
+  const normalizedRouteQ = routeQuery.trim().toLowerCase();
+  const filteredRoutes = mappedRoutes.filter((rt) => {
+    if (activeFilter !== 'all' && rt.mode !== activeFilter) return false;
+    if (!normalizedRouteQ) return true;
+    const haystack = `${rt.ref} ${rt.name} ${rt.from ?? ''} ${rt.to ?? ''} ${rt.operator ?? ''}`.toLowerCase();
+    return haystack.includes(normalizedRouteQ);
+  });
+
+  const handleOpenSpot = (presetMode?: VehicleType) => {
     if (!isSignedIn) {
       onRequireAuth();
       return;
     }
-    setSpotOpen((prev) => !prev);
+    if (presetMode) {
+      setSpotType(presetMode);
+      setSpotOpen(true);
+    } else {
+      setSpotOpen((prev) => !prev);
+    }
     setConditionOpen(false);
   };
 
@@ -175,15 +254,40 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
             </p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={handleOpenSpot}
-          disabled={!selectedZone}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 transition-colors hover:bg-slate-50 disabled:opacity-40 whitespace-nowrap"
-        >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>{copy.spotVehicle}</span>
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !soundAlertEnabled;
+              setSoundAlertEnabled(next);
+              if (next) playArrivalChime();
+            }}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+              soundAlertEnabled
+                ? 'border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700'
+                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            {soundAlertEnabled ? (
+              <Bell className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <BellOff className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span className="hidden sm:inline">
+              {soundAlertEnabled ? copy.alertOnLabel : copy.alertOffLabel}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleOpenSpot()}
+            disabled={!selectedZone}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 transition-colors hover:bg-slate-50 disabled:opacity-40 whitespace-nowrap"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{copy.spotVehicle}</span>
+          </button>
+        </div>
       </div>
 
       {/* Live Queue & Waiting Check-in Strip */}
@@ -275,15 +379,108 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
         </form>
       )}
 
-      {/* Live Commuter Check Verdict */}
-      <div className="border-b border-slate-200 bg-slate-50 px-5 py-3.5">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-          {copy.newcomerBadge}
+      {/* Live 3-Mode Commuter Radar (Jeepney, Bus, Taxi) */}
+      <div className="border-b border-slate-200 bg-slate-50 px-5 py-3.5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            {copy.jeepRadarTitle}
+          </div>
+          {allSorted.length > 0 && (
+            <span className="inline-flex items-center gap-1 font-mono text-[11px] font-bold text-emerald-700 tabular-nums">
+              <Radio className="h-3 w-3" aria-hidden="true" />
+              <span>
+                {allSorted.length} {copy.liveCountSuffix.toUpperCase()}
+              </span>
+            </span>
+          )}
         </div>
+
+        {/* Per-mode live availability strip for Jeepney, Bus & Taxi */}
+        <div className="grid grid-cols-3 gap-2">
+          {(
+            [
+              {
+                mode: 'jeep' as const,
+                label: copy.jeep,
+                Icon: BusFront,
+                accentText: 'text-amber-700',
+              },
+              {
+                mode: 'bus' as const,
+                label: copy.bus,
+                Icon: Bus,
+                accentText: 'text-blue-700',
+              },
+              {
+                mode: 'taxi' as const,
+                label: copy.taxi,
+                Icon: CarTaxiFront,
+                accentText: 'text-emerald-700',
+              },
+            ] as const
+          ).map(({mode, label, Icon, accentText}) => {
+            const matches = allSorted.filter((v) => v.type === mode);
+            const routeCount = mappedRoutes.filter((r) => r.mode === mode).length;
+            const fastest = matches[0];
+            const isSelectedMode = activeFilter === mode;
+
+            return (
+              <div
+                key={mode}
+                className={`flex flex-col justify-between rounded-lg border bg-white p-2.5 transition-colors ${
+                  isSelectedMode ? 'border-slate-900' : 'border-slate-200'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChangeFilter(isSelectedMode ? 'all' : mode);
+                    if (fastest) onSelectVehicle(fastest.id);
+                  }}
+                  className="text-left focus-visible:outline-none"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={`inline-flex items-center gap-1 text-xs font-bold ${accentText}`}>
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      <span className="truncate">{label}</span>
+                    </span>
+                    <span className="font-mono text-[11px] font-bold text-slate-900 tabular-nums">
+                      {matches.length}
+                    </span>
+                  </div>
+                  <div className="mt-1 font-mono text-[11px] tabular-nums text-slate-600 truncate">
+                    {fastest ? (
+                      <span className="font-semibold text-slate-900">
+                        {formatEta(fastest.etaSeconds, copy)}
+                      </span>
+                    ) : (
+                      <span>{copy.noLiveModeYet}</span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 font-mono text-[10px] tabular-nums text-slate-500 truncate">
+                    {routeCount} {mode === 'taxi' ? copy.baysCountSuffix : copy.routesCountSuffix}
+                  </div>
+                </button>
+
+                {!fastest && selectedZone && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenSpot(mode)}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    <Plus className="h-2.5 w-2.5" aria-hidden="true" />
+                    <span>{copy.reportQuickBtn}</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
         {isLoadingZones ? (
           <div className="mt-1 h-4 w-3/4 animate-pulse rounded bg-slate-200" />
-        ) : sortedVehicles.length > 0 ? (
-          <div className="mt-1 flex items-start gap-2 text-sm font-medium text-slate-900">
+        ) : allSorted.length > 0 ? (
+          <div className="flex items-start gap-2 text-xs font-medium text-slate-900">
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
             <span>
               {copy.verdictYesPrefix}{' '}
@@ -292,11 +489,31 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
             </span>
           </div>
         ) : (
-          <div className="mt-1 flex items-start gap-2 text-xs leading-relaxed text-slate-600">
-            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
-            <span>
-              {activeFilter === 'all' ? copy.verdictNone : copy.verdictNone}
-            </span>
+          <div className="space-y-2.5">
+            <div className="flex items-start gap-2 text-xs leading-relaxed text-slate-600">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+              <span>{copy.verdictNone}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedZone && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenSpot(activeFilter === 'all' ? 'jeep' : activeFilter)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{copy.spotVehicle}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onShareLiveRide(activeFilter === 'all' ? undefined : activeFilter)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 whitespace-nowrap"
+              >
+                <Radio className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                <span>{copy.ridingOrDrivingCta}</span>
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -452,6 +669,11 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
                       </div>
                       <div className="font-mono text-[11px] text-slate-500 tabular-nums">
                         {formatDistance(vehicle.distanceMeters, copy)}
+                        {vehicle.liveMode === 'gps' &&
+                        vehicle.speedKmh !== undefined &&
+                        vehicle.speedKmh > 1
+                          ? ` · ${vehicle.speedKmh} km/h`
+                          : ''}
                       </div>
                     </td>
                   </tr>
@@ -470,40 +692,112 @@ export const ArrivalsBoard: React.FC<ArrivalsBoardProps> = ({
             <span>{copy.mappedRoutesTitle}</span>
           </div>
           <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-            {mappedRoutes.length}
+            {filteredRoutes.length}
           </span>
         </div>
-        <p className="text-[11px] text-slate-500">{copy.mappedRoutesSubtitle}</p>
+        <p className="text-[11px] text-slate-500">
+          {filteredRoutes.length > 0 ? copy.clickRouteHint : copy.mappedRoutesSubtitle}
+        </p>
+
+        {mappedRoutes.length > 3 && (
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+              aria-hidden="true"
+            />
+            <input
+              type="text"
+              value={routeQuery}
+              onChange={(e) => setRouteQuery(e.target.value)}
+              placeholder={copy.routeFilterPlaceholder}
+              className="h-8 w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none"
+            />
+          </div>
+        )}
 
         {isLoadingRoutes ? (
           <div className="space-y-1.5 pt-1">
             <div className="h-3.5 w-48 animate-pulse rounded bg-slate-100" />
             <div className="h-3.5 w-56 animate-pulse rounded bg-slate-100" />
           </div>
-        ) : mappedRoutes.length === 0 ? (
-          <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
-            <span>{copy.noMappedRoutes}</span>
+        ) : filteredRoutes.length === 0 ? (
+          <div className="space-y-2">
+            {selectedZone?.routeRefs && selectedZone.routeRefs.length > 0 && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
+                <span className="font-semibold">{selectedZone.name}: </span>
+                <span className="font-mono">{selectedZone.routeRefs.join(' · ')}</span>
+              </div>
+            )}
+            <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+              <span>{copy.noMappedRoutes}</span>
+            </div>
           </div>
         ) : (
-          <div className="max-h-[155px] overflow-y-auto divide-y divide-slate-100 border-t border-slate-100">
-            {mappedRoutes.map((rt) => (
-              <div key={rt.id} className="flex items-start justify-between gap-2 py-2 text-xs">
-                <div className="min-w-0">
-                  <div className="font-semibold text-slate-900 truncate">{rt.name}</div>
-                  {(rt.from || rt.to || rt.operator) && (
-                    <div className="text-[11px] text-slate-500 truncate">
-                      {[rt.from && rt.to ? `${rt.from} → ${rt.to}` : null, rt.operator]
-                        .filter(Boolean)
-                        .join(' · ')}
+          <div className="max-h-[210px] overflow-y-auto divide-y divide-slate-100 border-t border-slate-100">
+            {filteredRoutes.map((rt) => {
+              const isSelected = rt.id === selectedRouteId;
+              const modeColor =
+                rt.mode === 'jeep'
+                  ? 'text-amber-700'
+                  : rt.mode === 'taxi'
+                    ? 'text-emerald-700'
+                    : rt.mode === 'rail'
+                      ? 'text-violet-700'
+                      : 'text-blue-700';
+              const modeShort =
+                rt.mode === 'jeep'
+                  ? 'JEEP'
+                  : rt.mode === 'taxi'
+                    ? 'TAXI'
+                    : rt.mode === 'rail'
+                      ? 'RAIL'
+                      : rt.mode === 'ferry'
+                        ? 'FERRY'
+                        : 'BUS';
+
+              return (
+                <button
+                  key={rt.id}
+                  type="button"
+                  onClick={() => onSelectRoute(isSelected ? null : rt)}
+                  className={`flex w-full items-start justify-between gap-2 px-2 py-2 text-left text-xs transition-colors ${
+                    isSelected ? 'bg-slate-900 text-white' : 'hover:bg-slate-50 text-slate-900'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">
+                      <span
+                        className={`font-mono text-[10px] font-bold mr-1.5 ${
+                          isSelected ? 'text-slate-300' : modeColor
+                        }`}
+                      >
+                        {modeShort}
+                      </span>
+                      <span>{rt.name}</span>
                     </div>
-                  )}
-                </div>
-                <span className="shrink-0 font-mono text-[10px] font-bold uppercase text-slate-600">
-                  {rt.ref}
-                </span>
-              </div>
-            ))}
+                    {(rt.from || rt.to || rt.operator) && (
+                      <div
+                        className={`mt-0.5 text-[11px] truncate ${
+                          isSelected ? 'text-slate-300' : 'text-slate-500'
+                        }`}
+                      >
+                        {[rt.from && rt.to ? `${rt.from} → ${rt.to}` : null, rt.operator]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                  <span
+                    className={`shrink-0 font-mono text-[10px] font-bold uppercase ${
+                      isSelected ? 'text-slate-200' : 'text-slate-600'
+                    }`}
+                  >
+                    {rt.ref}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>

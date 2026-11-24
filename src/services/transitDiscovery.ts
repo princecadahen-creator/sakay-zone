@@ -40,6 +40,72 @@ export function bearingDegrees(from: LatLngPoint, to: LatLngPoint): number {
   return (brng + 360) % 360;
 }
 
+/**
+ * Interpolates a coordinate and heading along a road polyline at normalized t in [0, 1].
+ */
+export function interpolateAlongPath(
+  path: LatLngPoint[],
+  t: number
+): {position: LatLngPoint; heading: number; totalMeters: number} {
+  if (path.length === 0) {
+    return {position: {lat: 14.5995, lng: 120.9842}, heading: 0, totalMeters: 0};
+  }
+  if (path.length === 1) {
+    return {position: path[0], heading: 0, totalMeters: 0};
+  }
+
+  const segLengths: number[] = [];
+  let totalMeters = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const len = distanceMetersBetween(path[i], path[i + 1]);
+    segLengths.push(len);
+    totalMeters += len;
+  }
+
+  if (totalMeters <= 0.5) {
+    return {
+      position: path[path.length - 1],
+      heading: bearingDegrees(path[0], path[path.length - 1]),
+      totalMeters: 1,
+    };
+  }
+
+  const clamped = Math.max(0, Math.min(1, t));
+  const targetDist = clamped * totalMeters;
+  let accum = 0;
+
+  for (let i = 0; i < segLengths.length; i++) {
+    const segLen = segLengths[i];
+    if (accum + segLen >= targetDist || i === segLengths.length - 1) {
+      const localT = segLen > 0 ? (targetDist - accum) / segLen : 0;
+      const p1 = path[i];
+      const p2 = path[i + 1];
+      return {
+        position: {
+          lat: p1.lat + (p2.lat - p1.lat) * localT,
+          lng: p1.lng + (p2.lng - p1.lng) * localT,
+        },
+        heading: bearingDegrees(p1, p2),
+        totalMeters,
+      };
+    }
+    accum += segLen;
+  }
+
+  const lastIdx = path.length - 1;
+  return {
+    position: path[lastIdx],
+    heading: bearingDegrees(path[lastIdx - 1], path[lastIdx]),
+    totalMeters,
+  };
+}
+
+interface OverpassMember {
+  type?: string;
+  role?: string;
+  geometry?: Array<{lat: number; lon: number}>;
+}
+
 interface OverpassElement {
   type: 'node' | 'way' | 'relation';
   id: number;
@@ -47,6 +113,7 @@ interface OverpassElement {
   lon?: number;
   center?: {lat: number; lon: number};
   tags?: Record<string, string>;
+  members?: OverpassMember[];
 }
 
 function inferAllowedFromTags(tags: Record<string, string>, name: string): VehicleType[] {
@@ -74,6 +141,36 @@ function inferRuleFromName(name: string): ZoneRuleType {
   return 'loading_unloading';
 }
 
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
+async function fetchOverpassJson(
+  query: string,
+  timeoutMs = 5500
+): Promise<{elements?: OverpassElement[]} | null> {
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+        body: `data=${encodeURIComponent(query)}`,
+        signal: controller.signal,
+      });
+      window.clearTimeout(timer);
+      if (res.ok) {
+        return (await res.json()) as {elements?: OverpassElement[]};
+      }
+    } catch {
+      // Try next Overpass mirror
+    }
+  }
+  return null;
+}
+
 /**
  * Discovers real nearby transit stops, terminals, bus stops, and taxi stands
  * using the free OpenStreetMap Overpass API, with a road-snapped OSRM fallback
@@ -99,18 +196,8 @@ export async function discoverNearbyLoadingZones(
   `;
 
   try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 5500);
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    window.clearTimeout(timer);
-
-    if (res.ok) {
-      const data = (await res.json()) as {elements?: OverpassElement[]};
+    const data = await fetchOverpassJson(query, 5500);
+    if (data) {
       for (const el of data.elements ?? []) {
         const lat = el.lat ?? el.center?.lat;
         const lng = el.lon ?? el.center?.lon;
@@ -129,6 +216,12 @@ export async function discoverNearbyLoadingZones(
         const street = tags['addr:street'] || tags.road || tags.operator || areaLabel || 'Nearby street';
         const allowedVehicles = inferAllowedFromTags(tags, name);
         const id = `osm-${el.type}-${el.id}`;
+        const rawRouteRef = tags.route_ref || tags.routes || tags.destination || '';
+        const routeRefs = rawRouteRef
+          .split(/[;,]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(0, 8);
 
         zonesById[id] = {
           id,
@@ -139,8 +232,12 @@ export async function discoverNearbyLoadingZones(
           allowedVehicles,
           ruleType: inferRuleFromName(name),
           status: 'active',
-          landmarkTip: `OpenStreetMap transit stop near ${street}. Stand safely behind the curb and verify the vehicle signboard before boarding.`,
+          landmarkTip:
+            routeRefs.length > 0
+              ? `OpenStreetMap stop near ${street}. Signboards/Routes tagged: ${routeRefs.join(', ')}.`
+              : `OpenStreetMap transit stop near ${street}. Stand safely behind the curb and verify the vehicle signboard before boarding.`,
           fareRange: allowedVehicles.includes('bus') ? '₱13 – ₱35' : '₱13 – ₱20',
+          routeRefs: routeRefs.length > 0 ? routeRefs : undefined,
         };
       }
     }
@@ -220,65 +317,232 @@ export async function discoverNearbyLoadingZones(
 }
 
 /**
- * Discovers REAL mapped public transit routes (jeepney/share_taxi, bus, rail, ferry)
- * passing near the searched location via OpenStreetMap Overpass API.
+ * Discovers REAL mapped public transit routes (jeepney/share_taxi, bus, taxi stands, rail, ferry)
+ * AND their road geometry passing near the searched location via OpenStreetMap Overpass API.
  */
 export async function discoverMappedRoutesNear(
   center: LatLngPoint
 ): Promise<MappedTransitRoute[]> {
   const query = `
-    [out:json][timeout:6];
-    relation["route"~"bus|share_taxi|minibus|light_rail|subway|rail|ferry"](around:1200,${center.lat},${center.lng});
-    out tags 18;
+    [out:json][timeout:7];
+    (
+      relation["route"~"bus|share_taxi|minibus|light_rail|subway|rail|ferry"](around:2200,${center.lat},${center.lng});
+    );
+    out geom 18;
+    (
+      node["route_ref"](around:2200,${center.lat},${center.lng});
+      node["amenity"~"taxi|bus_station"](around:2200,${center.lat},${center.lng});
+      way["amenity"~"taxi|bus_station"](around:2200,${center.lat},${center.lng});
+    );
+    out center 20;
   `;
 
   try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 5500);
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    window.clearTimeout(timer);
-
-    if (!res.ok) return [];
-    const data = (await res.json()) as {elements?: OverpassElement[]};
-    const seenNames: Record<string, boolean> = {};
+    const data = await fetchOverpassJson(query, 6500);
+    if (!data) return [];
+    const seenKeys: Record<string, boolean> = {};
     const routes: MappedTransitRoute[] = [];
 
     for (const el of data.elements ?? []) {
       const tags = el.tags ?? {};
-      const routeType = tags.route ?? 'bus';
-      const name = tags.name || `${tags.from ?? 'Origin'} → ${tags.to ?? 'Destination'}`;
-      if (!name || seenNames[name]) continue;
-      seenNames[name] = true;
 
-      let mode: MappedTransitRoute['mode'] = 'bus';
-      if (routeType === 'share_taxi' || routeType === 'minibus' || name.toLowerCase().includes('jeep')) {
-        mode = 'jeep';
-      } else if (routeType === 'light_rail' || routeType === 'subway' || routeType === 'rail') {
-        mode = 'rail';
-      } else if (routeType === 'ferry') {
-        mode = 'ferry';
+      if (el.type === 'relation') {
+        const routeType = tags.route ?? 'bus';
+        const name = tags.name || `${tags.from ?? 'Origin'} → ${tags.to ?? 'Destination'}`;
+        const key = `rel:${name.toLowerCase()}`;
+        if (!name || seenKeys[key]) continue;
+        seenKeys[key] = true;
+
+        let mode: MappedTransitRoute['mode'] = 'bus';
+        if (
+          routeType === 'share_taxi' ||
+          routeType === 'minibus' ||
+          name.toLowerCase().includes('jeep')
+        ) {
+          mode = 'jeep';
+        } else if (
+          routeType === 'light_rail' ||
+          routeType === 'subway' ||
+          routeType === 'rail'
+        ) {
+          mode = 'rail';
+        } else if (routeType === 'ferry') {
+          mode = 'ferry';
+        }
+
+        const paths: LatLngPoint[][] = [];
+        let focusPoint: LatLngPoint | undefined;
+        for (const m of el.members ?? []) {
+          if (m.type === 'way' && Array.isArray(m.geometry) && m.geometry.length >= 2) {
+            const localPts = m.geometry
+              .filter((pt) => distanceMetersBetween(center, {lat: pt.lat, lng: pt.lon}) <= 3500)
+              .map((pt) => ({lat: pt.lat, lng: pt.lon}));
+            if (localPts.length >= 2) {
+              paths.push(localPts);
+              if (!focusPoint) {
+                focusPoint = localPts[Math.floor(localPts.length / 2)];
+              }
+            }
+          }
+          if (paths.length >= 16) break;
+        }
+
+        routes.push({
+          id: `route-${el.id}`,
+          ref: tags.ref || (mode === 'jeep' ? 'PUJ' : mode === 'rail' ? 'RAIL' : 'BUS'),
+          name,
+          mode,
+          from: tags.from,
+          to: tags.to,
+          operator: tags.operator,
+          paths,
+          focusPoint,
+          sourceKind: 'osm-relation',
+        });
+        continue;
       }
 
-      routes.push({
-        id: `route-${el.id}`,
-        ref: tags.ref || (mode === 'jeep' ? 'PUJ' : mode === 'rail' ? 'RAIL' : 'BUS'),
-        name,
-        mode,
-        from: tags.from,
-        to: tags.to,
-        operator: tags.operator,
-      });
+      // Stop-level tagged route_ref or taxi / terminal bays
+      const lat = el.lat ?? el.center?.lat;
+      const lng = el.lon ?? el.center?.lon;
+      if (typeof lat !== 'number' || typeof lng !== 'number') continue;
+
+      if (tags.amenity === 'taxi') {
+        const taxiName = tags.name || tags.operator || 'Taxi Stand / Pick-up Bay';
+        const key = `taxi:${taxiName.toLowerCase()}`;
+        if (seenKeys[key]) continue;
+        seenKeys[key] = true;
+        routes.push({
+          id: `taxi-${el.type}-${el.id}`,
+          ref: 'TAXI',
+          name: taxiName,
+          mode: 'taxi',
+          operator: tags.operator,
+          focusPoint: {lat, lng},
+          sourceKind: 'osm-taxi-bay',
+        });
+        continue;
+      }
+
+      const rawRefs = tags.route_ref || tags.routes || '';
+      if (rawRefs) {
+        const stopName = tags.name || tags['addr:street'] || 'Loading Stop';
+        for (const token of rawRefs.split(/[;,]/).map((s) => s.trim()).filter(Boolean).slice(0, 4)) {
+          const lower = `${token} ${stopName} ${tags.network ?? ''}`.toLowerCase();
+          const mode: MappedTransitRoute['mode'] =
+            lower.includes('jeep') || lower.includes('puj') || lower.includes('toda')
+              ? 'jeep'
+              : 'bus';
+          const key = `tag:${mode}:${token.toLowerCase()}`;
+          if (seenKeys[key]) continue;
+          seenKeys[key] = true;
+          routes.push({
+            id: `stoptag-${el.id}-${token.replace(/[^a-zA-Z0-9]/g, '')}`,
+            ref: token.slice(0, 14),
+            name: `${token} via ${stopName}`,
+            mode,
+            operator: tags.operator || tags.network,
+            focusPoint: {lat, lng},
+            sourceKind: 'osm-stop-tag',
+          });
+        }
+      } else if (tags.amenity === 'bus_station' && tags.name) {
+        const lower = tags.name.toLowerCase();
+        const mode: MappedTransitRoute['mode'] =
+          lower.includes('jeep') || lower.includes('uv') ? 'jeep' : 'bus';
+        const key = `station:${tags.name.toLowerCase()}`;
+        if (!seenKeys[key]) {
+          seenKeys[key] = true;
+          routes.push({
+            id: `station-${el.type}-${el.id}`,
+            ref: mode === 'jeep' ? 'PUJ' : 'BUS',
+            name: `${tags.name} Terminal`,
+            mode,
+            operator: tags.operator,
+            focusPoint: {lat, lng},
+            sourceKind: 'osm-stop-tag',
+          });
+        }
+      }
     }
 
-    return routes.slice(0, 12);
+    const order: Record<MappedTransitRoute['mode'], number> = {
+      jeep: 0,
+      bus: 1,
+      taxi: 2,
+      rail: 3,
+      ferry: 4,
+    };
+    return routes.sort((a, b) => order[a.mode] - order[b.mode]).slice(0, 18);
   } catch {
     return [];
   }
+}
+
+const roadPathCache: Record<string, LatLngPoint[]> = {};
+
+/**
+ * Fetches and caches a real OSRM driving road path between two points.
+ */
+export async function fetchOsrmRoadPath(
+  origin: LatLngPoint,
+  destination: LatLngPoint
+): Promise<LatLngPoint[]> {
+  const key = `${origin.lat.toFixed(4)},${origin.lng.toFixed(4)}->${destination.lat.toFixed(4)},${destination.lng.toFixed(4)}`;
+  if (roadPathCache[key]) return roadPathCache[key];
+
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4000);
+    const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url, {signal: controller.signal});
+    window.clearTimeout(timer);
+    if (res.ok) {
+      const json = (await res.json()) as {
+        routes?: Array<{geometry?: {coordinates?: Array<[number, number]>}}>;
+      };
+      const coords = json.routes?.[0]?.geometry?.coordinates;
+      if (Array.isArray(coords) && coords.length >= 2) {
+        const pts = coords.map(([lng, lat]) => ({lat, lng}));
+        roadPathCache[key] = pts;
+        return pts;
+      }
+    }
+  } catch {
+    // Fallback below
+  }
+
+  return [origin, destination];
+}
+
+/**
+ * Picks a realistic upstream road origin point for a community sighting and resolves its OSRM road path.
+ */
+export async function resolveSightingRoadPath(
+  sighting: VehicleSightingRecord,
+  allZones: LoadingZone[]
+): Promise<LatLngPoint[]> {
+  const cacheKey = `sight:${sighting.id}`;
+  if (roadPathCache[cacheKey]) return roadPathCache[cacheKey];
+
+  const dest: LatLngPoint = {lat: sighting.zoneLat, lng: sighting.zoneLng};
+  const neighbor = allZones.find(
+    (z) =>
+      z.id !== sighting.zoneId &&
+      distanceMetersBetween(z.location, dest) >= 400 &&
+      distanceMetersBetween(z.location, dest) <= 4000
+  );
+
+  const origin: LatLngPoint = neighbor
+    ? neighbor.location
+    : {
+        lat: dest.lat + 0.0085,
+        lng: dest.lng - 0.0055,
+      };
+
+  const path = await fetchOsrmRoadPath(origin, dest);
+  roadPathCache[cacheKey] = path;
+  return path;
 }
 
 /**
@@ -355,28 +619,37 @@ export async function fetchWalkingRouteSummary(
 
 /**
  * Combines ONLY genuine real-time GPS trips and live community sightings
- * approaching or reported near the selected Loading Zone. Zero fake/demo units.
+ * approaching or broadcasting near the selected Loading Zone.
+ * Sightings move in real time along their cached OSRM road path.
  */
 export function computeLiveVehiclesForZone(
   liveTrips: LiveGpsTripRecord[],
   sightings: VehicleSightingRecord[],
-  targetZone: LoadingZone,
-  currentUid: string | null
+  targetZone: LoadingZone | null,
+  currentUid: string | null,
+  sightingPaths: Record<string, LatLngPoint[]> = {},
+  fallbackCenter: LatLngPoint = {lat: 14.5995, lng: 120.9842}
 ): TrackedVehicle[] {
   const result: TrackedVehicle[] = [];
-  const zoneShort = targetZone.name.split('—')[0].trim().slice(0, 24);
+  const targetLocation = targetZone?.location ?? fallbackCenter;
+  const targetId = targetZone?.id ?? 'area-center';
+  const zoneShort = targetZone
+    ? targetZone.name.split('—')[0].trim().slice(0, 24)
+    : 'Nearby Area';
   const now = Date.now();
 
-  // 1. Live driver/passenger GPS trips within 18 km of the selected zone
+  // 1. Live driver/passenger GPS trips within 25 km of the selected zone or map center
   for (const trip of liveTrips) {
     const tripPos: LatLngPoint = {lat: trip.lat, lng: trip.lng};
-    const dist = Math.round(distanceMetersBetween(tripPos, targetZone.location));
-    if (dist > 18000) continue;
+    const dist = Math.round(distanceMetersBetween(tripPos, targetLocation));
+    if (dist > 25000) continue;
 
     const effectiveSpeed = Math.max(4.5, trip.speedMps > 0.8 ? trip.speedMps : 6.2);
     const etaSeconds = Math.max(20, Math.round(dist / effectiveSpeed));
     const heading =
-      trip.heading > 0 ? trip.heading : bearingDegrees(tripPos, targetZone.location);
+      trip.heading > 0 ? trip.heading : bearingDegrees(tripPos, targetLocation);
+    const freshnessSec = Math.max(0, Math.round((now - trip.updatedAtMs) / 1000));
+    const speedKmh = Math.round(trip.speedMps * 3.6);
 
     result.push({
       id: `gps-${trip.tripId}`,
@@ -387,7 +660,7 @@ export function computeLiveVehiclesForZone(
       plateNumber: trip.displayName,
       occupancy: trip.occupancy,
       fareText: trip.type === 'taxi' ? '₱45 flagdown' : '₱13.00 min',
-      path: [tripPos, targetZone.location],
+      path: [tripPos, targetLocation],
       progress: 0,
       speedMps: effectiveSpeed,
       totalMeters: dist,
@@ -395,29 +668,37 @@ export function computeLiveVehiclesForZone(
       etaSeconds,
       position: tripPos,
       heading,
-      targetZoneId: targetZone.id,
+      targetZoneId: targetId,
       liveMode: 'gps',
       reporterName: trip.displayName,
       reportedAtMs: trip.updatedAtMs,
+      freshnessSec,
+      speedKmh,
       isSelf: Boolean(currentUid && trip.driverUid === currentUid),
     });
   }
 
-  // 2. Real community sightings matching this zone (or within 600m) and not expired
+  // 2. Real community sightings moving smoothly along real OSRM roads toward the stop
   for (const sight of sightings) {
     if (sight.expiresAtMs <= now) continue;
     const sightZonePos: LatLngPoint = {lat: sight.zoneLat, lng: sight.zoneLng};
-    const isSameZone = sight.zoneId === targetZone.id;
-    const nearTarget = distanceMetersBetween(sightZonePos, targetZone.location) <= 600;
+    const isSameZone = Boolean(targetZone && sight.zoneId === targetZone.id);
+    const nearTarget = distanceMetersBetween(sightZonePos, targetLocation) <= 2000;
     if (!isSameZone && !nearTarget) continue;
 
+    const totalApproachSec = Math.max(60, sight.etaMinutes * 60);
     const elapsedSec = Math.max(0, Math.round((now - sight.createdAtMs) / 1000));
-    const remainingSec = Math.max(30, sight.etaMinutes * 60 - elapsedSec);
-    const estMeters = Math.max(60, Math.round(remainingSec * 6.0));
-    const markerPos: LatLngPoint = {
-      lat: targetZone.location.lat + 0.0018,
-      lng: targetZone.location.lng - 0.0015,
-    };
+    const remainingSec = Math.max(15, totalApproachSec - elapsedSec);
+    const progress = Math.max(0.05, Math.min(0.98, elapsedSec / totalApproachSec));
+
+    const fallbackPath: LatLngPoint[] = [
+      {lat: targetLocation.lat + 0.0085, lng: targetLocation.lng - 0.0055},
+      targetLocation,
+    ];
+    const path = sightingPaths[sight.id] ?? fallbackPath;
+    const interp = interpolateAlongPath(path, progress);
+    const estMeters = Math.max(25, Math.round(interp.totalMeters * (1 - progress)));
+    const freshnessSec = elapsedSec;
 
     result.push({
       id: `sight-${sight.id}`,
@@ -428,18 +709,19 @@ export function computeLiveVehiclesForZone(
       plateNumber: sight.reporterName,
       occupancy: sight.occupancy,
       fareText: sight.type === 'taxi' ? '₱45 flagdown' : '₱13.00 min',
-      path: [markerPos, targetZone.location],
-      progress: 0,
-      speedMps: 6.0,
-      totalMeters: estMeters,
+      path,
+      progress,
+      speedMps: Math.max(3, Math.round(interp.totalMeters / totalApproachSec)),
+      totalMeters: interp.totalMeters,
       distanceMeters: estMeters,
       etaSeconds: remainingSec,
-      position: markerPos,
-      heading: bearingDegrees(markerPos, targetZone.location),
-      targetZoneId: targetZone.id,
+      position: interp.position,
+      heading: interp.heading,
+      targetZoneId: targetId,
       liveMode: 'community',
       reporterName: sight.reporterName,
       reportedAtMs: sight.createdAtMs,
+      freshnessSec,
     });
   }
 

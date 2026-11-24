@@ -4,6 +4,8 @@ import {
   Bus,
   BusFront,
   CarTaxiFront,
+  Check,
+  Download,
   LocateFixed,
   LogIn,
   LogOut,
@@ -11,6 +13,7 @@ import {
   MapPinPlus,
   Radio,
   Square,
+  Video,
   X,
 } from 'lucide-react';
 import {auth, signInWithGoogle, signOutAccount} from './firebase';
@@ -20,6 +23,7 @@ import {ManageZonesPanel} from './components/ManageZonesPanel';
 import {NewcomerGuide} from './components/NewcomerGuide';
 import {OfflineIndicator} from './components/OfflineIndicator';
 import {PWAInstallButton} from './components/PWAInstallButton';
+import {TikTokShareModal} from './components/TikTokShareModal';
 import {TransitMapView} from './components/TransitMapView';
 import {TRANSLATIONS} from './i18n/translations';
 import {
@@ -45,6 +49,7 @@ import {
   distanceMetersBetween,
   fetchWalkingRouteSummary,
   fetchZoneWeather,
+  resolveSightingRoadPath,
 } from './services/transitDiscovery';
 import type {
   CommunityZoneRecord,
@@ -63,6 +68,16 @@ import type {
 
 const DEFAULT_CENTER: LatLngPoint = {lat: 14.5995, lng: 120.9842};
 const LOCAL_HIDE_STORAGE_KEY = 'sakayzone_hidden_ids_v2';
+const OFFLINE_AREAS_STORAGE_KEY = 'sakayzone_offline_areas_v1';
+
+interface SavedOfflineArea {
+  key: string;
+  label: string;
+  center: LatLngPoint;
+  zones: LoadingZone[];
+  routes: MappedTransitRoute[];
+  savedAtMs: number;
+}
 
 function loadHiddenZoneIds(): Record<string, boolean> {
   try {
@@ -75,9 +90,98 @@ function loadHiddenZoneIds(): Record<string, boolean> {
   }
 }
 
+function loadSavedOfflineAreas(): SavedOfflineArea[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_AREAS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is SavedOfflineArea =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof (item as SavedOfflineArea).key === 'string' &&
+        Array.isArray((item as SavedOfflineArea).zones)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedOfflineAreas(areas: SavedOfflineArea[]): void {
+  try {
+    const compact = areas.slice(0, 8).map((area) => ({
+      ...area,
+      zones: area.zones.slice(0, 20),
+      routes: area.routes.slice(0, 10).map((rt) => ({
+        ...rt,
+        paths: rt.paths ? rt.paths.slice(0, 6).map((seg) => seg.slice(0, 35)) : undefined,
+      })),
+    }));
+    localStorage.setItem(OFFLINE_AREAS_STORAGE_KEY, JSON.stringify(compact));
+  } catch {
+    // Ignore storage quota errors gracefully
+  }
+}
+
+function latLngToOsmTile(lat: number, lng: number, zoom: number): {x: number; y: number} {
+  const n = Math.pow(2, zoom);
+  const x = Math.floor(((lng + 180) / 360) * n);
+  const latRad = (lat * Math.PI) / 180;
+  const y = Math.floor(
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n
+  );
+  return {x, y};
+}
+
+async function preloadOsmTilesAround(center: LatLngPoint): Promise<number> {
+  const urls: string[] = [];
+  const subs = ['a', 'b', 'c'];
+  let idx = 0;
+
+  for (const zoom of [14, 15]) {
+    const base = latLngToOsmTile(center.lat, center.lng, zoom);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const sub = subs[idx % subs.length];
+        idx++;
+        urls.push(`https://${sub}.tile.openstreetmap.org/${zoom}/${base.x + dx}/${base.y + dy}.png`);
+      }
+    }
+  }
+
+  let cached = 0;
+  await Promise.all(
+    urls.map(async (url) => {
+      try {
+        const res = await fetch(url, {mode: 'cors'});
+        if (res.ok) cached++;
+      } catch {
+        // Ignore individual tile fetch errors
+      }
+    })
+  );
+  return cached;
+}
+
 export default function App() {
-  const [language, setLanguage] = useState<Language>('en');
+  const [language, setLanguage] = useState<Language>(() => {
+    try {
+      const saved = localStorage.getItem('sakayzone_lang_v1');
+      return saved === 'fil' ? 'fil' : 'en';
+    } catch {
+      return 'en';
+    }
+  });
   const copy = TRANSLATIONS[language];
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sakayzone_lang_v1', language);
+    } catch {
+      // Ignore storage errors
+    }
+  }, [language]);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -110,8 +214,10 @@ export default function App() {
   const [hiddenZoneIds, setHiddenZoneIds] = useState<Record<string, boolean>>(loadHiddenZoneIds);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [vehicleFilter, setVehicleFilter] = useState<'all' | VehicleType>('all');
   const [isPinMode, setIsPinMode] = useState(false);
+  const [isTikTokModalOpen, setIsTikTokModalOpen] = useState(false);
 
   // Driver / Passenger Live GPS Broadcast state
   const [shareSetupOpen, setShareSetupOpen] = useState(false);
@@ -123,8 +229,27 @@ export default function App() {
   const lastGpsWriteAtRef = useRef<number>(0);
   const firstGpsWriteRef = useRef<boolean>(true);
 
+  const [savedOfflineAreas, setSavedOfflineAreas] = useState<SavedOfflineArea[]>(
+    loadSavedOfflineAreas
+  );
+  const [sightingPaths, setSightingPaths] = useState<Record<string, LatLngPoint[]>>({});
+  const [isCachingOffline, setIsCachingOffline] = useState(false);
+  const [offlineCacheDoneKey, setOfflineCacheDoneKey] = useState<string | null>(null);
+
   const areaCacheRef = useRef<Record<string, LoadingZone[]>>({});
   const routesCacheRef = useRef<Record<string, MappedTransitRoute[]>>({});
+
+  // Seed in-memory caches from localStorage on initial render so zero-data cold starts work immediately
+  useEffect(() => {
+    for (const area of savedOfflineAreas) {
+      if (!areaCacheRef.current[area.key]) {
+        areaCacheRef.current[area.key] = area.zones;
+      }
+      if (!routesCacheRef.current[area.key]) {
+        routesCacheRef.current[area.key] = area.routes;
+      }
+    }
+  }, [savedOfflineAreas]);
 
   // Firebase Auth listener
   useEffect(() => {
@@ -157,12 +282,14 @@ export default function App() {
     };
   }, []);
 
-  // Periodic re-evaluation every 30s so expired 15-min sightings drop cleanly
+  // Live 1-second countdown tick while vehicles are active; 30s sweep otherwise
   const [clockTick, setClockTick] = useState(0);
+  const hasActiveFeed = sightings.length > 0 || liveTrips.length > 0;
   useEffect(() => {
-    const id = window.setInterval(() => setClockTick((t) => t + 1), 30000);
+    const intervalMs = hasActiveFeed ? 1000 : 30000;
+    const id = window.setInterval(() => setClockTick((t) => t + 1), intervalMs);
     return () => window.clearInterval(id);
-  }, []);
+  }, [hasActiveFeed]);
 
   useEffect(() => {
     try {
@@ -247,34 +374,72 @@ export default function App() {
       )
   );
 
-  // Load real OSM stops & real OSM mapped routes for searched area
+  // Load real OSM stops & real OSM mapped routes for searched area (with zero-data offline fallback)
   const loadAreaData = useCallback(async (targetCenter: LatLngPoint, label?: string) => {
     const cacheKey = `${targetCenter.lat.toFixed(3)},${targetCenter.lng.toFixed(3)}`;
+    const areaName = (label || 'Saved Area').trim();
 
-    const cachedZones = areaCacheRef.current[cacheKey];
-    if (cachedZones) {
-      setOsmZones(cachedZones);
+    let resolvedZones: LoadingZone[] = areaCacheRef.current[cacheKey] ?? [];
+    if (resolvedZones.length > 0) {
+      setOsmZones(resolvedZones);
       setIsLoadingZones(false);
-      if (cachedZones[0]) setSelectedZoneId(cachedZones[0].id);
+      if (resolvedZones[0]) setSelectedZoneId(resolvedZones[0].id);
     } else {
       setIsLoadingZones(true);
-      const zones = await discoverNearbyLoadingZones(targetCenter, label);
-      areaCacheRef.current[cacheKey] = zones;
-      setOsmZones(zones);
+      resolvedZones = await discoverNearbyLoadingZones(targetCenter, areaName);
+      if (resolvedZones.length === 0) {
+        const offlineMatch = loadSavedOfflineAreas().find(
+          (a) => a.key === cacheKey || distanceMetersBetween(a.center, targetCenter) <= 2500
+        );
+        if (offlineMatch) {
+          resolvedZones = offlineMatch.zones;
+        }
+      }
+      if (resolvedZones.length > 0) {
+        areaCacheRef.current[cacheKey] = resolvedZones;
+      }
+      setOsmZones(resolvedZones);
       setIsLoadingZones(false);
-      if (zones[0]) setSelectedZoneId(zones[0].id);
+      if (resolvedZones[0]) setSelectedZoneId(resolvedZones[0].id);
     }
 
-    const cachedRoutes = routesCacheRef.current[cacheKey];
-    if (cachedRoutes) {
-      setMappedRoutes(cachedRoutes);
+    let resolvedRoutes: MappedTransitRoute[] = routesCacheRef.current[cacheKey] ?? [];
+    if (resolvedRoutes.length > 0) {
+      setMappedRoutes(resolvedRoutes);
       setIsLoadingRoutes(false);
     } else {
       setIsLoadingRoutes(true);
-      const routes = await discoverMappedRoutesNear(targetCenter);
-      routesCacheRef.current[cacheKey] = routes;
-      setMappedRoutes(routes);
+      resolvedRoutes = await discoverMappedRoutesNear(targetCenter);
+      if (resolvedRoutes.length === 0 && !navigator.onLine) {
+        const offlineMatch = loadSavedOfflineAreas().find(
+          (a) => a.key === cacheKey || distanceMetersBetween(a.center, targetCenter) <= 2500
+        );
+        if (offlineMatch) {
+          resolvedRoutes = offlineMatch.routes;
+        }
+      }
+      if (resolvedRoutes.length > 0) {
+        routesCacheRef.current[cacheKey] = resolvedRoutes;
+      }
+      setMappedRoutes(resolvedRoutes);
       setIsLoadingRoutes(false);
+    }
+
+    if (resolvedZones.length > 0 && navigator.onLine) {
+      setSavedOfflineAreas((prev) => {
+        const nextEntry: SavedOfflineArea = {
+          key: cacheKey,
+          label: areaName.split(',')[0].trim().slice(0, 32) || 'Saved Area',
+          center: targetCenter,
+          zones: resolvedZones,
+          routes: resolvedRoutes,
+          savedAtMs: Date.now(),
+        };
+        const filtered = prev.filter((item) => item.key !== cacheKey);
+        const updated = [nextEntry, ...filtered].slice(0, 8);
+        persistSavedOfflineAreas(updated);
+        return updated;
+      });
     }
   }, []);
 
@@ -317,17 +482,46 @@ export default function App() {
     };
   }, [userLocation, selectedZone?.id]);
 
-  // Real live vehicles (ONLY live GPS trips + active community sightings)
+  // Resolve real OSRM street geometry for community sightings so vehicles follow real roads
+  useEffect(() => {
+    const now = Date.now();
+    const missing = sightings.filter((s) => s.expiresAtMs > now && !sightingPaths[s.id]);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      missing.map(async (sight) => {
+        const path = await resolveSightingRoadPath(sight, allZones);
+        return {id: sight.id, path};
+      })
+    ).then((resolved) => {
+      if (cancelled) return;
+      setSightingPaths((prev) => {
+        const next = {...prev};
+        for (const item of resolved) {
+          next[item.id] = item.path;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sightings, allZones, sightingPaths]);
+
+  // Real live vehicles (ONLY live GPS trips + road-tracked community sightings)
   const liveVehicles = useMemo(() => {
-    if (!selectedZone) return [];
     void clockTick;
     return computeLiveVehiclesForZone(
       liveTrips,
       sightings,
       selectedZone,
-      currentUser?.uid ?? null
+      currentUser?.uid ?? null,
+      sightingPaths,
+      mapCenter
     );
-  }, [liveTrips, sightings, selectedZone, currentUser?.uid, clockTick]);
+  }, [liveTrips, sightings, selectedZone, currentUser?.uid, sightingPaths, mapCenter, clockTick]);
 
   const filteredVehicles = useMemo(() => {
     if (vehicleFilter === 'all') return liveVehicles;
@@ -430,7 +624,6 @@ export default function App() {
           }
           lastGpsWriteAtRef.current = now;
           const isFirst = firstGpsWriteRef.current;
-          firstGpsWriteRef.current = false;
 
           const loc = {lat: pos.coords.latitude, lng: pos.coords.longitude};
           setUserLocation(loc);
@@ -444,9 +637,13 @@ export default function App() {
             speedMps: pos.coords.speed ?? 0,
             heading: pos.coords.heading ?? 0,
             isFirstWrite: isFirst,
-          }).catch((err: unknown) => {
-            setAuthNotice(err instanceof Error ? err.message : 'Unable to sync GPS.');
-          });
+          })
+            .then(() => {
+              firstGpsWriteRef.current = false;
+            })
+            .catch((err: unknown) => {
+              setAuthNotice(err instanceof Error ? err.message : 'Unable to sync GPS.');
+            });
         },
         () => {
           setAuthNotice('GPS signal lost. Please check device location permission.');
@@ -639,6 +836,15 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsTikTokModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+            >
+              <Video className="h-3.5 w-3.5 text-slate-900" aria-hidden="true" />
+              <span className="hidden sm:inline">{copy.shareToTikTok}</span>
+            </button>
+
             <PWAInstallButton />
 
             {currentUser ? (
@@ -830,6 +1036,28 @@ export default function App() {
             </div>
           </div>
 
+          {/* Active Live GPS Broadcast Confirmation Strip */}
+          {isBroadcastingGps && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-950">
+              <div className="flex items-center gap-2 min-w-0">
+                <Radio className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+                <span className="font-semibold">{copy.broadcastActiveLabel}</span>
+                <span className="truncate font-mono font-bold">
+                  {copy.vehicleLabels[shareType]} ·{' '}
+                  {shareRoute.trim() || `${copy.vehicleLabels[shareType]} Live Trip`}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void stopBroadcast()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap shrink-0"
+              >
+                <Square className="h-3 w-3" aria-hidden="true" />
+                <span>{copy.stopSharingRide}</span>
+              </button>
+            </div>
+          )}
+
           {/* Live GPS Broadcast Setup Panel */}
           {shareSetupOpen && !isBroadcastingGps && (
             <form
@@ -924,8 +1152,84 @@ export default function App() {
             </div>
           </div>
 
+          {/* Offline Saved Areas & Wi-Fi Map Preload Bar */}
+          {savedOfflineAreas.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                <span className="text-[11px] font-semibold text-slate-600 mr-1">
+                  {copy.savedAreasLabel}
+                </span>
+                {savedOfflineAreas.map((area) => {
+                  const currentKey = `${mapCenter.lat.toFixed(3)},${mapCenter.lng.toFixed(3)}`;
+                  const isActive = area.key === currentKey;
+                  return (
+                    <button
+                      key={area.key}
+                      type="button"
+                      onClick={() => {
+                        setAreaLabel(area.label);
+                        setMapCenter(area.center);
+                        setMapZoom(15);
+                        setSelectedVehicleId(null);
+                        setOsmZones(area.zones);
+                        setMappedRoutes(area.routes);
+                        setIsLoadingZones(false);
+                        setIsLoadingRoutes(false);
+                        if (area.zones[0]) setSelectedZoneId(area.zones[0].id);
+                      }}
+                      className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                        isActive
+                          ? 'border-slate-900 bg-slate-900 text-white'
+                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {area.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                disabled={isCachingOffline}
+                onClick={() => {
+                  const key = `${mapCenter.lat.toFixed(3)},${mapCenter.lng.toFixed(3)}`;
+                  setIsCachingOffline(true);
+                  void preloadOsmTilesAround(mapCenter).then(() => {
+                    setIsCachingOffline(false);
+                    setOfflineCacheDoneKey(key);
+                  });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-60 whitespace-nowrap shrink-0"
+              >
+                {offlineCacheDoneKey ===
+                `${mapCenter.lat.toFixed(3)},${mapCenter.lng.toFixed(3)}` ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                    <span>
+                      {language === 'fil' ? 'Naka-save ang Mapa' : 'Map Cached Offline'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-3.5 w-3.5 text-slate-700" aria-hidden="true" />
+                    <span>
+                      {isCachingOffline
+                        ? language === 'fil'
+                          ? 'Sini-save ang mapa...'
+                          : 'Caching map...'
+                        : language === 'fil'
+                          ? 'I-save ang Mapa Offline'
+                          : 'Save Map Offline'}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-            <div className="lg:col-span-7 flex flex-col min-h-[480px] lg:min-h-[600px]">
+            <div className="lg:col-span-7 flex flex-col min-h-[340px] lg:min-h-[600px]">
               <TransitMapView
                 center={mapCenter}
                 zoom={mapZoom}
@@ -933,6 +1237,9 @@ export default function App() {
                 selectedZoneId={selectedZone?.id ?? null}
                 vehicles={filteredVehicles}
                 selectedVehicleId={selectedVehicleId}
+                mappedRoutes={mappedRoutes}
+                selectedRouteId={selectedRouteId}
+                activeFilter={vehicleFilter}
                 userLocation={userLocation}
                 walkingPath={walkingInfo?.path ?? null}
                 waitingCountsByZone={waitingCountsByZone}
@@ -945,11 +1252,68 @@ export default function App() {
                   if (found) setMapCenter(found.location);
                 }}
                 onSelectVehicle={(id) => setSelectedVehicleId(id)}
+                onSelectRoute={(id) => setSelectedRouteId(id)}
                 onDropCustomZonePin={(loc) => void handleDropCustomZonePin(loc)}
+                onQuickStartLive={() => {
+                  if (!currentUser) {
+                    setAuthNotice(copy.signInToContribute);
+                    window.scrollTo({top: 0, behavior: 'smooth'});
+                    return;
+                  }
+                  setShareSetupOpen(true);
+                  window.scrollTo({top: 0, behavior: 'smooth'});
+                }}
               />
             </div>
 
             <div className="lg:col-span-5 flex flex-col gap-5">
+              <ArrivalsBoard
+                selectedZone={selectedZone}
+                vehicles={filteredVehicles}
+                allZoneVehicles={liveVehicles}
+                selectedVehicleId={selectedVehicleId}
+                activeFilter={vehicleFilter}
+                isLoadingZones={isLoadingZones}
+                mappedRoutes={mappedRoutes}
+                selectedRouteId={selectedRouteId}
+                isLoadingRoutes={isLoadingRoutes}
+                waitingCount={selectedZoneWaitingCount}
+                isUserWaitingHere={isUserWaitingAtSelectedZone}
+                isSignedIn={Boolean(currentUser)}
+                copy={copy}
+                onSelectVehicle={(id) => {
+                  setSelectedVehicleId(id);
+                  const found = liveVehicles.find((v) => v.id === id);
+                  if (found) setMapCenter(found.position);
+                }}
+                onSelectRoute={(route) => {
+                  setSelectedRouteId(route ? route.id : null);
+                  if (route?.focusPoint) {
+                    setMapCenter(route.focusPoint);
+                    setMapZoom(15);
+                  }
+                }}
+                onChangeFilter={setVehicleFilter}
+                onShareLiveRide={(presetType) => {
+                  if (!currentUser) {
+                    setAuthNotice(copy.signInToContribute);
+                    return;
+                  }
+                  if (presetType) setShareType(presetType);
+                  setShareSetupOpen(true);
+                  window.scrollTo({top: 0, behavior: 'smooth'});
+                }}
+                onRequireAuth={() => {
+                  setAuthNotice(copy.signInToContribute);
+                  if (window.scrollY > 100) {
+                    window.scrollTo({top: 0, behavior: 'smooth'});
+                  }
+                }}
+                onSpotVehicle={handleSpotVehicle}
+                onToggleWaiting={handleToggleWaiting}
+                onReportZoneCondition={handleReportZoneCondition}
+              />
+
               <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
                 <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
                   <h2 className="text-sm font-bold text-slate-900">
@@ -1042,29 +1406,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-
-              <ArrivalsBoard
-                selectedZone={selectedZone}
-                vehicles={filteredVehicles}
-                selectedVehicleId={selectedVehicleId}
-                activeFilter={vehicleFilter}
-                isLoadingZones={isLoadingZones}
-                mappedRoutes={mappedRoutes}
-                isLoadingRoutes={isLoadingRoutes}
-                waitingCount={selectedZoneWaitingCount}
-                isUserWaitingHere={isUserWaitingAtSelectedZone}
-                isSignedIn={Boolean(currentUser)}
-                copy={copy}
-                onSelectVehicle={(id) => {
-                  setSelectedVehicleId(id);
-                  const found = filteredVehicles.find((v) => v.id === id);
-                  if (found) setMapCenter(found.position);
-                }}
-                onRequireAuth={() => setAuthNotice(copy.signInToContribute)}
-                onSpotVehicle={handleSpotVehicle}
-                onToggleWaiting={handleToggleWaiting}
-                onReportZoneCondition={handleReportZoneCondition}
-              />
             </div>
           </div>
         </section>
@@ -1117,6 +1458,17 @@ export default function App() {
         </div>
       </footer>
       <OfflineIndicator />
+      <TikTokShareModal
+        isOpen={isTikTokModalOpen}
+        areaLabel={areaLabel}
+        selectedZone={selectedZone}
+        vehicles={filteredVehicles}
+        mappedRoutes={mappedRoutes}
+        waitingCount={selectedZoneWaitingCount}
+        weather={zoneWeather}
+        copy={copy}
+        onClose={() => setIsTikTokModalOpen(false)}
+      />
     </div>
   );
 }

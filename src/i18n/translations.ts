@@ -10,6 +10,27 @@ export interface CopyDictionary {
   signIn: string;
   signOut: string;
   signInToContribute: string;
+  shareToTikTok: string;
+  tiktokModalTitle: string;
+  tiktokModalSubtitle: string;
+  tiktokShareAction: string;
+  tiktokDownloadPng: string;
+  tiktokDownloadFallback: string;
+  jeepRadarTitle: string;
+  jeepRadarLive: string;
+  jeepRadarNone: string;
+  liveCountSuffix: string;
+  noLiveModeYet: string;
+  reportQuickBtn: string;
+  broadcastActiveLabel: string;
+  ridingOrDrivingCta: string;
+  routesCountSuffix: string;
+  baysCountSuffix: string;
+  clickRouteHint: string;
+  routeFilterPlaceholder: string;
+  alertOnLabel: string;
+  alertOffLabel: string;
+  savedAreasLabel: string;
   searchPlaceholder: string;
   searchHint: string;
   filterAll: string;
@@ -102,6 +123,27 @@ export const TRANSLATIONS: Record<Language, CopyDictionary> = {
     signIn: 'Sign In',
     signOut: 'Sign Out',
     signInToContribute: 'Sign in with Google to share live GPS, spot vehicles, or pin stops for everyone.',
+    shareToTikTok: 'Share to TikTok',
+    tiktokModalTitle: 'Share Live SakayZone Card to TikTok',
+    tiktokModalSubtitle: 'Instant 9:16 summary screenshot of this loading zone’s live rides, queue, and weather — ready to post or download.',
+    tiktokShareAction: 'Share to TikTok / Apps',
+    tiktokDownloadPng: 'Download Picture (PNG)',
+    tiktokDownloadFallback: 'Picture downloaded! Open TikTok and select this PNG from your gallery.',
+    jeepRadarTitle: 'Live Jeepney, Bus & Taxi Availability',
+    jeepRadarLive: 'Live Jeepney approaching now',
+    jeepRadarNone: 'No live Jeepney GPS or sighting here yet',
+    liveCountSuffix: 'live',
+    noLiveModeYet: 'No live ping yet',
+    reportQuickBtn: 'Report',
+    broadcastActiveLabel: 'Broadcasting your Live GPS now:',
+    ridingOrDrivingCta: 'Inside a Jeep/Bus/Taxi? Share Live GPS',
+    routesCountSuffix: 'routes',
+    baysCountSuffix: 'stops / bays',
+    clickRouteHint: 'Tap any route to highlight it on the map',
+    routeFilterPlaceholder: 'Filter routes or destination (e.g. Cubao, Ayala)...',
+    alertOnLabel: 'Sound Alert On',
+    alertOffLabel: 'Alert on Arrival',
+    savedAreasLabel: 'Offline Saved Areas:',
     searchPlaceholder: 'Search street, landmark, or town in the Philippines...',
     searchHint: 'Real OpenStreetMap stops, transit routes, live weather, and shared commuter updates.',
     filterAll: 'All',
@@ -204,6 +246,27 @@ export const TRANSLATIONS: Record<Language, CopyDictionary> = {
     signIn: 'Mag-sign In',
     signOut: 'Sign Out',
     signInToContribute: 'Mag-sign in gamit ang Google para makapag-share ng live GPS, makapag-report ng sasakyan, o makapag-pin ng sakayan para sa lahat.',
+    shareToTikTok: 'Share sa TikTok',
+    tiktokModalTitle: 'I-share ang Live Pic sa TikTok',
+    tiktokModalSubtitle: 'Instant 9:16 summary picture ng lagay ng sakayan ngayon (live na jeep, pila, at panahon) — pwedeng i-download o i-share agad.',
+    tiktokShareAction: 'I-share sa TikTok / Apps',
+    tiktokDownloadPng: 'I-download ang Pic (PNG)',
+    tiktokDownloadFallback: 'Na-download na ang picture! Buksan ang TikTok at piliin ito sa gallery mo.',
+    jeepRadarTitle: 'Live Radar: May Jeep, Bus, o Taxi ba ngayon?',
+    jeepRadarLive: 'May live na Jeepney na paparating ngayon',
+    jeepRadarNone: 'Wala pang live Jeepney GPS o bagong report dito ngayon',
+    liveCountSuffix: 'live',
+    noLiveModeYet: 'Wala pang live ping',
+    reportQuickBtn: 'I-report',
+    broadcastActiveLabel: 'Naka-broadcast ngayon ang Live GPS mo:',
+    ridingOrDrivingCta: 'Nakasakay o driver ka? I-share Live GPS',
+    routesCountSuffix: 'ruta',
+    baysCountSuffix: 'sakayan / bay',
+    clickRouteHint: 'I-tap ang ruta para makita agad sa mapa',
+    routeFilterPlaceholder: 'Hanapin ang ruta o destinasyon (hal. Cubao, Ayala)...',
+    alertOnLabel: 'Naka-on ang Tunog',
+    alertOffLabel: 'Tunog Pag May Sasakyan',
+    savedAreasLabel: 'Naka-save (Walang Data OK):',
     searchPlaceholder: 'Maghanap ng kalye, landmark, o bayan sa Pilipinas...',
     searchHint: 'Totoong stops at ruta mula OpenStreetMap, live na panahon, at real-time updates ng mga pasahero.',
     filterAll: 'Lahat',

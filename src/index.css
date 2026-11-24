@@ -21,6 +21,19 @@
   font-variant-numeric: tabular-nums;
 }
 
+@keyframes sakayzone-dash-flow {
+  from {
+    stroke-dashoffset: 40;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.sakayzone-route-flow {
+  animation: sakayzone-dash-flow 1.8s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

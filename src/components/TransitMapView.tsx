@@ -2,7 +2,13 @@ import React, {useEffect, useRef} from 'react';
 import L from 'leaflet';
 import {MapPin} from 'lucide-react';
 import type {CopyDictionary} from '../i18n/translations';
-import type {LatLngPoint, LoadingZone, TrackedVehicle, VehicleType} from '../types/transit';
+import type {
+  LatLngPoint,
+  LoadingZone,
+  MappedTransitRoute,
+  TrackedVehicle,
+  VehicleType,
+} from '../types/transit';
 
 interface TransitMapViewProps {
   center: LatLngPoint;
@@ -11,6 +17,9 @@ interface TransitMapViewProps {
   selectedZoneId: string | null;
   vehicles: TrackedVehicle[];
   selectedVehicleId: string | null;
+  mappedRoutes: MappedTransitRoute[];
+  selectedRouteId: string | null;
+  activeFilter: 'all' | VehicleType;
   userLocation: LatLngPoint | null;
   walkingPath: LatLngPoint[] | null;
   waitingCountsByZone: Record<string, number>;
@@ -18,7 +27,9 @@ interface TransitMapViewProps {
   copy: CopyDictionary;
   onSelectZone: (zoneId: string) => void;
   onSelectVehicle: (vehicleId: string | null) => void;
+  onSelectRoute: (routeId: string | null) => void;
   onDropCustomZonePin: (location: LatLngPoint) => void;
+  onQuickStartLive?: () => void;
 }
 
 const VEHICLE_META: Record<VehicleType, {hex: string; short: string}> = {
@@ -38,6 +49,11 @@ function escapeHtml(raw: string): string {
 
 function formatEtaShort(seconds: number, copy: CopyDictionary): string {
   if (seconds <= 35) return copy.arrivingNow;
+  if (seconds < 600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  }
   const mins = Math.max(1, Math.round(seconds / 60));
   return `${mins} ${copy.minShort}`;
 }
@@ -49,6 +65,9 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
   selectedZoneId,
   vehicles,
   selectedVehicleId,
+  mappedRoutes,
+  selectedRouteId,
+  activeFilter,
   userLocation,
   walkingPath,
   waitingCountsByZone,
@@ -56,10 +75,13 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
   copy,
   onSelectZone,
   onSelectVehicle,
+  onSelectRoute,
   onDropCustomZonePin,
+  onQuickStartLive,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const routesLayerRef = useRef<L.LayerGroup | null>(null);
   const polylinesLayerRef = useRef<L.LayerGroup | null>(null);
   const zonesLayerRef = useRef<L.LayerGroup | null>(null);
   const vehiclesLayerRef = useRef<L.LayerGroup | null>(null);
@@ -73,6 +95,9 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
   const onSelectVehicleRef = useRef(onSelectVehicle);
   onSelectVehicleRef.current = onSelectVehicle;
+
+  const onSelectRouteRef = useRef(onSelectRoute);
+  onSelectRouteRef.current = onSelectRoute;
 
   const onSelectZoneRef = useRef(onSelectZone);
   onSelectZoneRef.current = onSelectZone;
@@ -93,6 +118,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       maxZoom: 19,
     }).addTo(map);
 
+    routesLayerRef.current = L.layerGroup().addTo(map);
     polylinesLayerRef.current = L.layerGroup().addTo(map);
     zonesLayerRef.current = L.layerGroup().addTo(map);
     vehiclesLayerRef.current = L.layerGroup().addTo(map);
@@ -108,7 +134,16 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
 
     mapRef.current = map;
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        map.invalidateSize({animate: false});
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+
     return () => {
+      resizeObserver?.disconnect();
       map.remove();
       mapRef.current = null;
     };
@@ -148,6 +183,74 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       .addTo(layer);
   }, [userLocation]);
 
+  // Render real OpenStreetMap Jeepney/Bus/Taxi/Rail route corridors with filter & selection highlighting
+  useEffect(() => {
+    const layer = routesLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+
+    for (const rt of mappedRoutes) {
+      const isSelected = rt.id === selectedRouteId;
+      const matchesFilter = activeFilter === 'all' || rt.mode === activeFilter;
+      const color =
+        rt.mode === 'jeep'
+          ? '#D97706'
+          : rt.mode === 'taxi'
+            ? '#059669'
+            : rt.mode === 'rail'
+              ? '#7C3AED'
+              : '#2563EB';
+      const safeTitle = escapeHtml(`${rt.ref} · ${rt.name}`);
+      const safeEnds =
+        rt.from && rt.to ? escapeHtml(`${rt.from} → ${rt.to}`) : '';
+
+      if (rt.paths && rt.paths.length > 0) {
+        const opacity = isSelected ? 0.95 : matchesFilter ? 0.62 : 0.14;
+        const weight = isSelected ? 6 : matchesFilter ? 3.5 : 2;
+
+        for (const seg of rt.paths) {
+          if (seg.length < 2) continue;
+          const poly = L.polyline(
+            seg.map((pt) => [pt.lat, pt.lng] as [number, number]),
+            {
+              color,
+              weight,
+              opacity,
+              dashArray: matchesFilter ? '10 10' : undefined,
+              className: matchesFilter ? 'sakayzone-route-flow' : undefined,
+            }
+          );
+          poly.bindPopup(
+            `<div style="font-family:'DM Sans',sans-serif;font-size:12px;">
+              <strong style="color:#0F172A;">${safeTitle}</strong>
+              ${safeEnds ? `<div style="color:#334155;margin-top:2px;">${safeEnds}</div>` : ''}
+              <div style="color:#64748B;margin-top:2px;">OpenStreetMap ${escapeHtml(rt.mode.toUpperCase())} Route</div>
+            </div>`
+          );
+          poly.on('click', () => {
+            onSelectRouteRef.current(rt.id);
+          });
+          poly.addTo(layer);
+        }
+      } else if (isSelected && rt.focusPoint) {
+        L.circleMarker([rt.focusPoint.lat, rt.focusPoint.lng], {
+          radius: 14,
+          color,
+          weight: 3,
+          fillColor: color,
+          fillOpacity: 0.25,
+        })
+          .bindPopup(
+            `<div style="font-family:'DM Sans',sans-serif;font-size:12px;">
+              <strong style="color:#0F172A;">${safeTitle}</strong>
+              <div style="color:#64748B;margin-top:2px;">OpenStreetMap ${escapeHtml(rt.mode.toUpperCase())} Stop / Bay</div>
+            </div>`
+          )
+          .addTo(layer);
+      }
+    }
+  }, [mappedRoutes, selectedRouteId, activeFilter]);
+
   // Render Walking Path (user -> zone) + Live Vehicle Approach Lines
   useEffect(() => {
     const layer = polylinesLayerRef.current;
@@ -160,7 +263,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
         {
           color: '#0F172A',
           weight: 3.5,
-          opacity: 0.75,
+          opacity: 0.8,
           dashArray: '6 6',
         }
       ).addTo(layer);
@@ -173,8 +276,8 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
         veh.path.map((pt) => [pt.lat, pt.lng] as [number, number]),
         {
           color: VEHICLE_META[veh.type].hex,
-          weight: isFocused ? 4.5 : 2.5,
-          opacity: isFocused ? 0.9 : 0.45,
+          weight: isFocused ? 5 : 3,
+          opacity: isFocused ? 0.95 : 0.65,
         }
       ).addTo(layer);
     }
@@ -247,7 +350,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
     }
   }, [zones, selectedZoneId, waitingCountsByZone, copy]);
 
-  // Render ONLY Real Live GPS Vehicles & Real Community Sightings
+  // Render Live GPS & Road-Tracked Community Vehicles
   useEffect(() => {
     const layer = vehiclesLayerRef.current;
     if (!layer) return;
@@ -267,6 +370,16 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
         veh.distanceMeters >= 1000
           ? `${(veh.distanceMeters / 1000).toFixed(1)} ${escapeHtml(copy.kmShort)}`
           : `${veh.distanceMeters} ${escapeHtml(copy.mShort)}`;
+      const speedBadge =
+        veh.liveMode === 'gps' && veh.speedKmh !== undefined && veh.speedKmh > 1
+          ? ` · ${veh.speedKmh} km/h`
+          : '';
+      const freshText =
+        veh.freshnessSec !== undefined
+          ? veh.freshnessSec < 10
+            ? 'Live now'
+            : `${veh.freshnessSec}s ago`
+          : '';
 
       const ringStyle = isSelected
         ? 'box-shadow:0 0 0 2px #0F172A,0 4px 10px rgba(0,0,0,0.28);transform:scale(1.08);'
@@ -279,7 +392,7 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
             <div style="background:${meta.hex};color:#fff;border-radius:6px;padding:3px 7px;display:flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;white-space:nowrap;${ringStyle}">
               <span>${meta.short}</span>
               <span>·</span>
-              <span>${veh.liveMode === 'gps' ? 'GPS' : etaText}</span>
+              <span>${etaText}</span>
             </div>
             <div style="margin-top:2px;width:14px;height:14px;border-radius:9999px;background:#fff;border:1.5px solid #CBD5E1;display:flex;align-items:center;justify-content:center;transform:rotate(${Math.round(
               veh.heading
@@ -298,12 +411,12 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
       });
 
       marker.bindPopup(
-        `<div style="min-width:195px;font-family:'DM Sans',sans-serif;">
+        `<div style="min-width:205px;font-family:'DM Sans',sans-serif;">
           <div style="font-size:11px;font-weight:700;color:${meta.hex};">${safeType} · ${safeSource}</div>
           <div style="margin-top:2px;font-size:13px;font-weight:700;color:#0F172A;">${safeRoute}</div>
-          <div style="margin-top:3px;font-size:11px;color:#475569;">By: ${safeReporter}</div>
+          <div style="margin-top:3px;font-size:11px;color:#475569;">By: ${safeReporter}${freshText ? ` · ${escapeHtml(freshText)}` : ''}</div>
           <div style="margin-top:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#0F172A;">
-            <strong>${etaText}</strong> · ${distText}
+            <strong>${etaText}</strong> · ${distText}${escapeHtml(speedBadge)}
           </div>
         </div>`
       );
@@ -317,14 +430,30 @@ export const TransitMapView: React.FC<TransitMapViewProps> = ({
   }, [vehicles, selectedVehicleId, copy]);
 
   return (
-    <div className="relative h-full w-full min-h-[460px] overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
-      <div ref={containerRef} className="h-full w-full min-h-[460px] z-0" />
+    <div className="relative h-full w-full min-h-[340px] lg:min-h-[600px] overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+      <div ref={containerRef} className="h-full w-full min-h-[340px] lg:min-h-[600px] z-0" />
 
       {isPinMode && (
         <div className="pointer-events-none absolute inset-x-4 top-4 z-[500] flex justify-center">
           <div className="rounded-lg border border-slate-900 bg-slate-900/95 px-4 py-2 text-xs font-medium text-white shadow-lg">
             {copy.pinInstruction}
           </div>
+        </div>
+      )}
+
+      {!isPinMode && vehicles.length === 0 && onQuickStartLive && (
+        <div className="absolute top-3 right-3 z-[400] max-w-[235px] rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-sm backdrop-blur-sm">
+          <div className="font-semibold text-slate-900">0 live GPS pings here yet</div>
+          <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
+            Rides move when real drivers/commuters share GPS or spot a vehicle.
+          </p>
+          <button
+            type="button"
+            onClick={onQuickStartLive}
+            className="mt-1.5 inline-flex items-center gap-1 rounded bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-slate-800"
+          >
+            <span>{copy.shareRide}</span>
+          </button>
         </div>
       )}
 

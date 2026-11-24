@@ -94,8 +94,23 @@ export default defineConfig(() => {
               options: {
                 cacheName: 'osm-tiles-cache',
                 expiration: {
-                  maxEntries: 250,
-                  maxAgeSeconds: 60 * 60 * 24 * 7,
+                  maxEntries: 800,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/(nominatim\.openstreetmap\.org|router\.project-osrm\.org|overpass-api\.de)\/.*/i,
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'osm-transit-api-cache',
+                networkTimeoutSeconds: 4,
+                expiration: {
+                  maxEntries: 60,
+                  maxAgeSeconds: 60 * 60 * 24 * 14,
                 },
                 cacheableResponse: {
                   statuses: [0, 200],

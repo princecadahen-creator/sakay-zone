@@ -23,6 +23,7 @@ export interface LoadingZone {
   status: ZoneStatus;
   landmarkTip: string;
   fareRange: string;
+  routeRefs?: string[];
   hidden?: boolean;
   authorUid?: string;
   authorName?: string;
@@ -52,6 +53,8 @@ export interface TrackedVehicle {
   liveMode: 'gps' | 'community';
   reporterName?: string;
   reportedAtMs?: number;
+  freshnessSec?: number;
+  speedKmh?: number;
   isSelf?: boolean;
 }
 
@@ -59,10 +62,13 @@ export interface MappedTransitRoute {
   id: string;
   ref: string;
   name: string;
-  mode: 'jeep' | 'bus' | 'rail' | 'ferry';
+  mode: 'jeep' | 'bus' | 'taxi' | 'rail' | 'ferry';
   from?: string;
   to?: string;
   operator?: string;
+  paths?: LatLngPoint[][];
+  focusPoint?: LatLngPoint;
+  sourceKind?: 'osm-relation' | 'osm-stop-tag' | 'osm-taxi-bay';
 }
 
 export interface ZoneWeatherInfo {
